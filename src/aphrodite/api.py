@@ -27,6 +27,7 @@ from aphrodite import __version__
 from aphrodite.admin import (
     XAISpendSummary,
     read_xai_spend_summary,
+    render_admin_catalog_import,
     render_admin_job_detail,
     render_admin_jobs_index,
     xai_cost_ledger_path,
@@ -107,8 +108,16 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         project_id: str,
         payload: ProjectJobBatchCreate,
     ) -> ProjectJobBatchRecord:
+        jobs = create_project_job_batch_jobs(project_id=project_id, payload=payload)
+        return ProjectJobBatchRecord(project_id=project_id, created=len(jobs), jobs=jobs)
+
+    def create_project_job_batch_jobs(
+        *,
+        project_id: str,
+        payload: ProjectJobBatchCreate,
+    ) -> list[JobRecord]:
         try:
-            jobs = store.create_project_job_batch(project_id=project_id, request=payload)
+            return store.create_project_job_batch(project_id=project_id, request=payload)
         except ProjectNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -119,7 +128,34 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"source asset not found: {exc.asset_id}",
             ) from exc
-        return ProjectJobBatchRecord(project_id=project_id, created=len(jobs), jobs=jobs)
+
+    def admin_import_page(
+        *,
+        selected_project_id: str | None = None,
+        selected_targets: list[str] | None = None,
+        background_style: str = "clean_white",
+        background_prompt: str | None = None,
+        quantity_per_target: int = 1,
+        priority: int = 5,
+        result: ProjectJobBatchRecord | None = None,
+        error: str | None = None,
+        status_code: int = status.HTTP_200_OK,
+    ) -> HTMLResponse:
+        return HTMLResponse(
+            render_admin_catalog_import(
+                projects=store.list_projects(limit=100),
+                marketplace_specs=list_marketplace_specs(),
+                selected_project_id=selected_project_id,
+                selected_targets=selected_targets,
+                background_style=background_style,
+                background_prompt=background_prompt,
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+                result=result,
+                error=error,
+            ),
+            status_code=status_code,
+        )
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -164,6 +200,106 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             jobs = [job for job in jobs if _job_needs_review(job)]
         spend = _xai_spend_summary(settings.media_root)
         return HTMLResponse(render_admin_jobs_index(jobs=jobs, spend=spend))
+
+    @app.get(
+        "/admin/import",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_catalog_import(
+        project_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
+    ) -> HTMLResponse:
+        return admin_import_page(selected_project_id=project_id)
+
+    @app.post(
+        "/admin/import",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    async def admin_import_catalog_csv(
+        project_id: Annotated[str, Form(min_length=1, max_length=80)],
+        file: Annotated[UploadFile, File(...)],
+        marketplace_targets: Annotated[list[str] | None, Form()] = None,
+        background_style: Annotated[str, Form(max_length=80)] = "clean_white",
+        background_prompt: Annotated[str | None, Form(max_length=1000)] = None,
+        quantity_per_target: Annotated[int, Form(ge=1, le=8)] = 1,
+        priority: Annotated[int, Form(ge=0, le=10)] = 5,
+    ) -> HTMLResponse:
+        selected_targets = marketplace_targets or []
+        if not selected_targets:
+            return admin_import_page(
+                selected_project_id=project_id,
+                selected_targets=selected_targets,
+                background_style=background_style,
+                background_prompt=background_prompt,
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+                error="Select at least one marketplace target.",
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        content = await file.read(settings.max_upload_bytes + 1)
+        if len(content) > settings.max_upload_bytes:
+            return admin_import_page(
+                selected_project_id=project_id,
+                selected_targets=selected_targets,
+                background_style=background_style,
+                background_prompt=background_prompt,
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+                error="CSV upload is too large.",
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
+        try:
+            payload = parse_catalog_csv(
+                content,
+                marketplace_targets=selected_targets,
+                background=BackgroundIntent(style=background_style, prompt=background_prompt),
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+            )
+            result = create_project_job_batch_record(project_id=project_id, payload=payload)
+        except CatalogImportError as exc:
+            return admin_import_page(
+                selected_project_id=project_id,
+                selected_targets=selected_targets,
+                background_style=background_style,
+                background_prompt=background_prompt,
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+                error=exc.message,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        except ValidationError as exc:
+            return admin_import_page(
+                selected_project_id=project_id,
+                selected_targets=selected_targets,
+                background_style=background_style,
+                background_prompt=background_prompt,
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+                error=str(exc.errors()[0].get("msg", "invalid import defaults")),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        except HTTPException as exc:
+            return admin_import_page(
+                selected_project_id=project_id,
+                selected_targets=selected_targets,
+                background_style=background_style,
+                background_prompt=background_prompt,
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+                error=str(exc.detail),
+                status_code=exc.status_code,
+            )
+        return admin_import_page(
+            selected_project_id=project_id,
+            selected_targets=selected_targets,
+            background_style=background_style,
+            background_prompt=background_prompt,
+            quantity_per_target=quantity_per_target,
+            priority=priority,
+            result=result,
+        )
 
     @app.get(
         "/admin/jobs/{job_id}",

@@ -204,6 +204,122 @@ def test_admin_review_missing_output_returns_404(tmp_path: Path, monkeypatch) ->
     assert response.status_code == 404
 
 
+def test_admin_import_screen_lists_projects_and_template(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Import Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Import Catalog"},
+    ).json()
+
+    response = test_client.get("/admin/import", params={"project_id": project_payload["id"]})
+
+    assert response.status_code == 200
+    assert "Catalog Import" in response.text
+    assert "Import Client / Import Catalog" in response.text
+    assert f'value="{project_payload["id"]}" selected' in response.text
+    assert "/v1/catalog-import/template.csv" in response.text
+    assert "Catalog square packshot" in response.text
+
+
+def test_admin_import_csv_creates_project_batch(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Import Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Import Catalog"},
+    ).json()
+    csv_content = (
+        b"name,sku,source_image_uri,marketplace_targets,priority\n"
+        b"Import tote,IMP-001,file:///media/import/tote.jpg,,6\n"
+        b"Import mug,IMP-002,file:///media/import/mug.jpg,social_square,8\n"
+    )
+
+    response = test_client.post(
+        "/admin/import",
+        data={
+            "project_id": project_payload["id"],
+            "marketplace_targets": ["catalog_square", "transparent_cutout"],
+            "background_style": "studio_shadow",
+            "quantity_per_target": "1",
+            "priority": "5",
+        },
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+    jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]}).json()
+
+    assert response.status_code == 200
+    jobs_by_name = {job["product"]["name"]: job for job in jobs}
+
+    assert "Imported 2 jobs." in response.text
+    assert "Import tote" in response.text
+    assert "Import mug" in response.text
+    assert sorted(jobs_by_name) == ["Import mug", "Import tote"]
+    assert [variant["target_id"] for variant in jobs_by_name["Import mug"]["output_plan"]] == [
+        "social_square"
+    ]
+    assert [variant["target_id"] for variant in jobs_by_name["Import tote"]["output_plan"]] == [
+        "catalog_square",
+        "transparent_cutout",
+    ]
+
+
+def test_admin_import_csv_requires_marketplace_target(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Import Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Import Catalog"},
+    ).json()
+
+    response = test_client.post(
+        "/admin/import",
+        data={"project_id": project_payload["id"]},
+        files={
+            "file": (
+                "catalog.csv",
+                b"name,source_image_uri\nNo target item,file:///media/no-target.jpg\n",
+                "text/csv",
+            )
+        },
+    )
+    jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]})
+
+    assert response.status_code == 422
+    assert "Select at least one marketplace target." in response.text
+    assert 'value="catalog_square" checked' not in response.text
+    assert jobs.json() == []
+
+
+def test_admin_import_csv_renders_errors_without_partial_jobs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Import Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Import Catalog"},
+    ).json()
+    csv_content = (
+        b"name,source_image_uri,source_asset_id\n"
+        b"Valid import item,file:///media/valid.jpg,\n"
+        b"Missing import asset,,missing\n"
+    )
+
+    response = test_client.post(
+        "/admin/import",
+        data={"project_id": project_payload["id"], "marketplace_targets": ["catalog_square"]},
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+    jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]})
+
+    assert response.status_code == 422
+    assert "source asset not found: missing" in response.text
+    assert jobs.status_code == 200
+    assert jobs.json() == []
+
+
 def test_admin_jobs_show_and_filter_ownership(tmp_path: Path, monkeypatch) -> None:
     test_client = client(tmp_path, monkeypatch)
     client_payload, project_payload, job = owned_completed_job(test_client, tmp_path)
@@ -317,7 +433,11 @@ def test_admin_routes_use_api_token_when_configured(tmp_path: Path, monkeypatch)
     test_client = client(tmp_path, monkeypatch, api_token="api-secret")
 
     missing = test_client.get("/admin/jobs")
+    missing_import = test_client.get("/admin/import")
     authorized = test_client.get("/admin/jobs", headers=API_HEADERS)
+    authorized_import = test_client.get("/admin/import", headers=API_HEADERS)
 
     assert missing.status_code == 401
+    assert missing_import.status_code == 401
     assert authorized.status_code == 200
+    assert authorized_import.status_code == 200

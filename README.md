@@ -41,6 +41,7 @@ Admin views:
 
 - `http://127.0.0.1:8020/admin/jobs`
 - `http://127.0.0.1:8020/admin/jobs?review=needs_review`
+- `http://127.0.0.1:8020/admin/import`
 - `http://127.0.0.1:8020/admin/jobs?client_id=<client id>`
 - `http://127.0.0.1:8020/admin/jobs?project_id=<project id>`
 - `http://127.0.0.1:8020/admin/spend.json`
@@ -216,4 +217,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 ## Next build targets
 
 - Add project-level export bundles and review dashboards.
-- Add an admin catalog import screen on top of the CSV batch API.
+- Add project-level import history and retry controls.

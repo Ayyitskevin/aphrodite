@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from aphrodite.domain import JobRecord, OutputReviewStatus
+from aphrodite.domain import (
+    JobRecord,
+    OutputReviewStatus,
+    ProjectJobBatchRecord,
+    ProjectRecord,
+)
+from aphrodite.marketplaces import MarketplaceSpec
 from aphrodite.xai import XAIImageConfig
 
 
@@ -83,7 +89,7 @@ def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) ->
         body=f"""
         <header>
           <h1>Aphrodite Jobs</h1>
-          <nav><a href="/admin/jobs">Jobs</a><a href="/admin/jobs?review=needs_review">Needs review</a><a href="/admin/spend.json">Spend JSON</a></nav>
+          <nav><a href="/admin/jobs">Jobs</a><a href="/admin/import">Import CSV</a><a href="/admin/jobs?review=needs_review">Needs review</a><a href="/admin/spend.json">Spend JSON</a></nav>
         </header>
         <section class="metrics">
           <div><span>Today</span><strong>${spend.today_cost_usd:.4f}</strong></div>
@@ -107,6 +113,105 @@ def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) ->
             </thead>
             <tbody>{rows}</tbody>
           </table>
+        </section>
+        """,
+    )
+
+
+def render_admin_catalog_import(
+    *,
+    projects: list[ProjectRecord],
+    marketplace_specs: list[MarketplaceSpec],
+    selected_project_id: str | None = None,
+    selected_targets: list[str] | None = None,
+    background_style: str = "clean_white",
+    background_prompt: str | None = None,
+    quantity_per_target: int = 1,
+    priority: int = 5,
+    result: ProjectJobBatchRecord | None = None,
+    error: str | None = None,
+) -> str:
+    selected = set(["catalog_square"] if selected_targets is None else selected_targets)
+    project_options = "\n".join(
+        _project_option(project, selected=project.id == selected_project_id)
+        for project in projects
+    )
+    if not project_options:
+        project_options = '<option value="">No projects available</option>'
+
+    target_options = "\n".join(
+        _marketplace_checkbox(spec, checked=spec.id in selected)
+        for spec in marketplace_specs
+    )
+    background_options = "\n".join(
+        _option(value, label, selected=value == background_style)
+        for value, label in [
+            ("clean_white", "Clean white"),
+            ("transparent", "Transparent"),
+            ("studio_shadow", "Studio shadow"),
+            ("lifestyle", "Lifestyle"),
+            ("brand_gradient", "Brand gradient"),
+        ]
+    )
+    banner = ""
+    if error:
+        banner = f'<section><div class="alert alert-error">{_h(error)}</div></section>'
+    elif result is not None:
+        plural = "job" if result.created == 1 else "jobs"
+        banner = (
+            f'<section><div class="alert alert-success">Imported {result.created} {plural}.</div>'
+            f'{_import_result_table(result)}</section>'
+        )
+
+    return _page(
+        title="Aphrodite Catalog Import",
+        body=f"""
+        <header>
+          <h1>Catalog Import</h1>
+          <nav><a href="/admin/jobs">Jobs</a><a href="/admin/jobs?review=needs_review">Needs review</a><a href="/v1/catalog-import/template.csv">CSV template</a></nav>
+        </header>
+        {banner}
+        <section>
+          <form method="post" action="/admin/import" enctype="multipart/form-data" class="import-form">
+            <div class="form-grid">
+              <label class="field">
+                <span>Project</span>
+                <select name="project_id" required>
+                  {project_options}
+                </select>
+              </label>
+              <label class="field">
+                <span>Background</span>
+                <select name="background_style">
+                  {background_options}
+                </select>
+              </label>
+              <label class="field">
+                <span>Quantity per target</span>
+                <input type="number" name="quantity_per_target" min="1" max="8" value="{_h(quantity_per_target)}">
+              </label>
+              <label class="field">
+                <span>Priority</span>
+                <input type="number" name="priority" min="0" max="10" value="{_h(priority)}">
+              </label>
+            </div>
+            <label class="field">
+              <span>Background prompt</span>
+              <input type="text" name="background_prompt" maxlength="1000" value="{_h(background_prompt or "")}">
+            </label>
+            <div class="field">
+              <span>Marketplace targets</span>
+              <div class="checkbox-grid">{target_options}</div>
+            </div>
+            <label class="field">
+              <span>CSV file</span>
+              <input type="file" name="file" accept=".csv,text/csv" required>
+            </label>
+            <div class="actions-row">
+              <button type="submit">Import CSV</button>
+              <a class="button" href="/v1/catalog-import/template.csv">Download template</a>
+            </div>
+          </form>
         </section>
         """,
     )
@@ -278,6 +383,7 @@ def _review_summary(job: JobRecord) -> str:
 def _job_detail_nav(job: JobRecord) -> str:
     links = [
         '<a href="/admin/jobs">Jobs</a>',
+        '<a href="/admin/import">Import CSV</a>',
         f'<a href="/v1/jobs/{_u(job.id)}">Job JSON</a>',
     ]
     if any(output.review_status == OutputReviewStatus.APPROVED for output in job.outputs):
@@ -369,6 +475,52 @@ def _outputs_panel(job: JobRecord) -> str:
     """
 
 
+def _project_option(project: ProjectRecord, *, selected: bool) -> str:
+    client = project.client.name if project.client is not None else project.client_id
+    selected_attr = " selected" if selected else ""
+    label = f"{client} / {project.name}"
+    return f'<option value="{_h(project.id)}"{selected_attr}>{_h(label)}</option>'
+
+
+def _marketplace_checkbox(spec: MarketplaceSpec, *, checked: bool) -> str:
+    checked_attr = " checked" if checked else ""
+    return f"""
+    <label>
+      <input type="checkbox" name="marketplace_targets" value="{_h(spec.id)}"{checked_attr}>
+      <span>{_h(spec.label)}</span>
+      <small>{_h(spec.id)}</small>
+    </label>
+    """
+
+
+def _option(value: str, label: str, *, selected: bool) -> str:
+    selected_attr = " selected" if selected else ""
+    return f'<option value="{_h(value)}"{selected_attr}>{_h(label)}</option>'
+
+
+def _import_result_table(result: ProjectJobBatchRecord) -> str:
+    rows = "\n".join(
+        f"""
+        <tr>
+          <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.id)}</small></td>
+          <td>{_h(job.product.sku or "-")}</td>
+          <td>{", ".join(_h(target) for target in job.marketplace_targets)}</td>
+          <td>{_h(str(job.priority))}</td>
+          <td><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></td>
+        </tr>
+        """
+        for job in result.jobs
+    )
+    project_link = f'<p><a class="button" href="/admin/jobs?project_id={_u(result.project_id)}">View project jobs</a></p>'
+    return f"""
+    {project_link}
+    <table>
+      <thead><tr><th>Product</th><th>SKU</th><th>Targets</th><th>Priority</th><th>Status</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    """
+
+
 def _spend_row(entry: XAISpendEntry) -> str:
     return f"""
     <tr>
@@ -445,14 +597,27 @@ def _page(*, title: str, body: str) -> str:
           .review-approved {{ background: #eef7f5; color: var(--accent); }}
           .review-note {{ margin: 8px 0 0; color: var(--ink); overflow-wrap: anywhere; }}
           .actions {{ display: grid; gap: 8px; margin-top: 10px; }}
-          form {{ display: grid; gap: 6px; margin: 0; }}
-          textarea {{ width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--line); padding: 8px; font: inherit; }}
+          .actions-row {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+          .import-form {{ background: var(--panel); border: 1px solid var(--line); padding: 16px; }}
+          .form-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }}
+          .field {{ display: grid; gap: 6px; }}
+          .field > span {{ color: var(--muted); font-size: 12px; text-transform: uppercase; }}
+          .checkbox-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }}
+          .checkbox-grid label {{ display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: start; border: 1px solid var(--line); padding: 8px; }}
+          .checkbox-grid small {{ grid-column: 2; }}
+          .alert {{ background: var(--panel); border: 1px solid var(--line); padding: 12px; }}
+          .alert-error {{ border-color: #f0b4ae; color: var(--bad); background: #fff7f6; }}
+          .alert-success {{ border-color: #9ed7ca; color: var(--accent); background: #eef7f5; }}
+          form {{ display: grid; gap: 12px; margin: 0; }}
+          input, select, textarea {{ width: 100%; border: 1px solid var(--line); padding: 8px; font: inherit; background: #fff; color: var(--ink); }}
+          input[type="checkbox"] {{ width: auto; margin-top: 3px; }}
+          textarea {{ min-height: 56px; resize: vertical; }}
           button, .button {{ display: inline-block; width: fit-content; border: 1px solid var(--line); background: #eef7f5; color: var(--accent); padding: 6px 10px; font: inherit; cursor: pointer; text-decoration: none; }}
           button:hover, .button:hover {{ text-decoration: none; filter: brightness(0.97); }}
           .danger {{ background: #fff1f0; color: var(--bad); }}
           @media (max-width: 760px) {{
             header {{ align-items: flex-start; flex-direction: column; }}
-            .metrics, .summary dl, .media-grid dl {{ grid-template-columns: 1fr; }}
+            .metrics, .summary dl, .media-grid dl, .form-grid {{ grid-template-columns: 1fr; }}
             table {{ display: block; overflow-x: auto; }}
           }}
         </style>
