@@ -78,6 +78,10 @@ def get_renderer_backend(name: str, *, media_root: str = "media") -> RendererBac
     normalized = name.strip().lower()
     if normalized == "local_stub":
         return LocalStubRendererBackend(media_root=media_root)
+    if normalized == "xai":
+        from aphrodite.xai import XAIImageRendererBackend
+
+        return XAIImageRendererBackend.from_env(media_root=media_root)
     raise RendererError(f"unknown renderer backend: {name}")
 
 

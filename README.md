@@ -14,6 +14,7 @@ pipeline will build on.
 - SQLite-backed source asset, product photo job, and generated output persistence.
 - Upload intake for PNG/JPEG product originals with checksum and dimensions.
 - Worker claim contract for renderers with heartbeats, stale claim recovery, and outputs.
+- Guarded xAI Grok Imagine renderer backend for real generated product outputs.
 - Domain models for product inputs, source assets, background intent, output variants, and job status.
 - Starter marketplace-style output presets for catalog, social, hero, and transparent
   packshot variants.
@@ -74,6 +75,18 @@ Run the local stub renderer worker:
 aphrodite-worker --backend local_stub --media-root media --token "$APHRODITE_WORKER_TOKEN" --once
 ```
 
+Run one guarded xAI render:
+
+```bash
+export APHRODITE_XAI_API_KEY=...
+export APHRODITE_XAI_DAILY_BUDGET_USD=0.10
+aphrodite-worker --backend xai --media-root media --token "$APHRODITE_WORKER_TOKEN" --once
+```
+
+The xAI backend uses uploaded source assets as edit inputs when available, otherwise it
+falls back to prompt-only generation. Costs returned by xAI are appended to
+`media/.aphrodite-xai-costs.jsonl` by default.
+
 Claim and complete a queued job manually as a renderer:
 
 ```bash
@@ -112,14 +125,24 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_RELOAD` | `false` | Enables uvicorn reload for local development. |
 | `APHRODITE_WORKER_API_URL` | `http://127.0.0.1:8020` | API base URL used by `aphrodite-worker`. |
 | `APHRODITE_WORKER_ID` | host-derived | Worker identity used when claiming jobs. |
-| `APHRODITE_WORKER_BACKEND` | `local_stub` | Renderer backend used by the worker CLI. |
+| `APHRODITE_WORKER_BACKEND` | `local_stub` | Renderer backend used by the worker CLI (`local_stub` or `xai`). |
 | `APHRODITE_WORKER_MEDIA_ROOT` | `media` | Shared media root where worker outputs are written. |
+| `APHRODITE_XAI_API_KEY` | unset | xAI bearer token for the `xai` renderer; `XAI_API_KEY` also works. |
+| `APHRODITE_XAI_MODEL` | `grok-imagine-image-quality` | xAI image model. |
+| `APHRODITE_XAI_BASE_URL` | `https://api.x.ai/v1` | xAI API base URL. |
+| `APHRODITE_XAI_TIMEOUT_SECONDS` | `60` | xAI request timeout. |
+| `APHRODITE_XAI_MAX_RETRIES` | `1` | Retries for transient xAI errors. |
+| `APHRODITE_XAI_RESOLUTION` | `1k` | Requested xAI image resolution. |
+| `APHRODITE_XAI_ESTIMATED_IMAGE_COST_USD` | `0.10` | Preflight cost estimate used for budget guards. |
+| `APHRODITE_XAI_MAX_IMAGE_COST_USD` | `0.25` | Per-image preflight limit. |
+| `APHRODITE_XAI_DAILY_BUDGET_USD` | `1.00` | Local daily budget guard before real xAI calls. |
+| `APHRODITE_XAI_COST_LEDGER_PATH` | `media/.aphrodite-xai-costs.jsonl` | Local JSONL cost ledger path. |
 | `APHRODITE_WORKER_POLL_SECONDS` | `5` | Idle polling delay for the worker CLI. |
 | `APHRODITE_WORKER_CLAIM_TTL_SECONDS` | `300` | Claim heartbeat/expiry window. |
 | `APHRODITE_WORKER_ONCE` | `false` | Process at most one claim and exit. |
 
 ## Next build targets
 
-- Add a ComfyUI backend behind the renderer interface.
 - Add QA/export records for approved variants.
+- Add a small admin view for job status, generated outputs, and xAI spend.
 - Add project/client ownership once Aphrodite is wired into the wider stack.
