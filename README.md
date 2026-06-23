@@ -38,6 +38,11 @@ curl http://127.0.0.1:8020/healthz
 curl http://127.0.0.1:8020/readiness
 ```
 
+Admin views:
+
+- `http://127.0.0.1:8020/admin/jobs`
+- `http://127.0.0.1:8020/admin/spend.json`
+
 Upload a source product image:
 
 ```bash
@@ -144,5 +149,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 ## Next build targets
 
 - Add QA/export records for approved variants.
-- Add a small admin view for job status, generated outputs, and xAI spend.
 - Add project/client ownership once Aphrodite is wired into the wider stack.

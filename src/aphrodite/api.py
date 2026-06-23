@@ -8,8 +8,16 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, HTMLResponse
 
 from aphrodite import __version__
+from aphrodite.admin import (
+    XAISpendSummary,
+    read_xai_spend_summary,
+    render_admin_job_detail,
+    render_admin_jobs_index,
+    xai_cost_ledger_path,
+)
 from aphrodite.assets import (
     AssetStorageError,
     AssetValidationError,
@@ -32,6 +40,7 @@ from aphrodite.domain import (
     WorkerJobClaim,
 )
 from aphrodite.marketplaces import list_marketplace_specs
+from aphrodite.storage import OutputStorageError, resolve_existing_media_file
 from aphrodite.store import AssetNotFoundError, JobStore, OutputVariantNotFoundError
 
 
@@ -78,6 +87,75 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             )
         Path(settings.media_root).mkdir(parents=True, exist_ok=True)
         return {"status": "ready", "store": "sqlite"}
+
+    @app.get(
+        "/admin",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_home() -> HTMLResponse:
+        return admin_jobs()
+
+    @app.get(
+        "/admin/jobs",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_jobs(limit: Annotated[int, Query(ge=1, le=100)] = 50) -> HTMLResponse:
+        spend = _xai_spend_summary(settings.media_root)
+        return HTMLResponse(
+            render_admin_jobs_index(jobs=store.list_jobs(limit=limit), spend=spend)
+        )
+
+    @app.get(
+        "/admin/jobs/{job_id}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_job_detail(job_id: str) -> HTMLResponse:
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        spend = _xai_spend_summary(settings.media_root)
+        return HTMLResponse(render_admin_job_detail(job=job, spend=spend))
+
+    @app.get(
+        "/admin/spend.json",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_spend_json() -> dict:
+        return _xai_spend_summary(settings.media_root).as_dict()
+
+    @app.get(
+        "/admin/assets/{asset_id}/file",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_asset_file(asset_id: str) -> FileResponse:
+        asset = store.get_asset(asset_id)
+        if asset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="asset not found")
+        return _media_file_response(
+            media_root=settings.media_root,
+            relative_path=asset.storage_path,
+            media_type=asset.content_type,
+        )
+
+    @app.get(
+        "/admin/jobs/{job_id}/outputs/{variant_id}/file",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_output_file(job_id: str, variant_id: str) -> FileResponse:
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        output = next((item for item in job.outputs if item.variant_id == variant_id), None)
+        if output is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        return _media_file_response(
+            media_root=settings.media_root,
+            relative_path=output.storage_path,
+            media_type=output.content_type,
+        )
 
     @app.post(
         "/v1/assets",
@@ -249,6 +327,31 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         return job
 
     return app
+
+
+def _xai_spend_summary(media_root: str) -> XAISpendSummary:
+    return read_xai_spend_summary(ledger_path=xai_cost_ledger_path(media_root=media_root))
+
+
+def _media_file_response(*, media_root: str, relative_path: str, media_type: str) -> FileResponse:
+    try:
+        path = resolve_existing_media_file(media_root=media_root, relative_path=relative_path)
+    except OutputStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="media path is outside the media root",
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="media file not found",
+        ) from exc
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name,
+        content_disposition_type="inline",
+    )
 
 
 def _require_bearer_token(*, authorization: str | None, expected_token: str | None) -> None:

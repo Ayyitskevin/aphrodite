@@ -18,7 +18,8 @@ source product image -> asset intake -> job request -> output plan -> renderer -
 
 ## Modules
 
-- `aphrodite.api`: FastAPI routes and application factory.
+- `aphrodite.api`: FastAPI routes, admin routes, and application factory.
+- `aphrodite.admin`: operator HTML views and xAI spend ledger parsing.
 - `aphrodite.assets`: upload validation, metadata extraction, and local asset writes.
 - `aphrodite.config`: environment-backed settings.
 - `aphrodite.domain`: asset, request, job, status, worker claim, and output models.

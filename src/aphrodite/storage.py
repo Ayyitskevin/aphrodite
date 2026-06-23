@@ -28,19 +28,30 @@ def output_relative_path(*, job_id: str, variant_id: str, extension: str) -> str
 
 
 def write_output_file(*, media_root: str, relative_path: str, content: bytes) -> StoredFile:
-    root = Path(media_root).resolve()
-    target = (root / relative_path).resolve()
-    if not target.is_relative_to(root):
-        raise OutputStorageError("output path escapes media root")
-
+    target = resolve_media_file_path(media_root=media_root, relative_path=relative_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
     return StoredFile(
-        relative_path=target.relative_to(root).as_posix(),
+        relative_path=target.relative_to(Path(media_root).resolve()).as_posix(),
         absolute_path=target,
         bytes=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
     )
+
+
+def resolve_media_file_path(*, media_root: str, relative_path: str) -> Path:
+    root = Path(media_root).resolve()
+    target = (root / relative_path).resolve()
+    if not target.is_relative_to(root):
+        raise OutputStorageError("media path escapes media root")
+    return target
+
+
+def resolve_existing_media_file(*, media_root: str, relative_path: str) -> Path:
+    target = resolve_media_file_path(media_root=media_root, relative_path=relative_path)
+    if not target.is_file():
+        raise FileNotFoundError(relative_path)
+    return target
 
 
 def safe_path_segment(value: str, *, fallback: str) -> str:
