@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aphrodite"
+version = "0.1.0"
+description = "AI product photography for e-commerce packshots and marketplace-ready variants."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx2>=2.0,<3.0",
+  "pytest>=8.2,<9.0",
+  "ruff>=0.6,<1.0",
+]
+
+[project.scripts]
+aphrodite-api = "aphrodite.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aphrodite"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
