@@ -103,6 +103,23 @@ curl -s http://127.0.0.1:8020/v1/projects/<project id>/jobs/batch \
   }'
 ```
 
+Import a CSV or Google Sheet export into a project batch:
+
+```bash
+curl -s -OJ http://127.0.0.1:8020/v1/catalog-import/template.csv
+
+curl -s http://127.0.0.1:8020/v1/projects/<project id>/jobs/batch/csv \
+  -H "Authorization: Bearer $APHRODITE_API_TOKEN" \
+  -F file=@catalog.csv \
+  -F marketplace_targets=catalog_square,transparent_cutout \
+  -F priority=6
+```
+
+Supported CSV columns are `name`, `sku`, `category`, `instructions`,
+`source_image_uri`, `source_asset_id`, `marketplace_targets`, `background_style`,
+`background_prompt`, `quantity_per_target`, and `priority`. Export a Google Sheet as CSV
+with the same headers to use the same route.
+
 Create a single generation job:
 
 ```bash
@@ -199,4 +216,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 ## Next build targets
 
 - Add project-level export bundles and review dashboards.
-- Add CSV/Sheet import helpers for catalog batches.
+- Add an admin catalog import screen on top of the CSV batch API.

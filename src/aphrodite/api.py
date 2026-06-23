@@ -21,6 +21,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from pydantic import ValidationError
 
 from aphrodite import __version__
 from aphrodite.admin import (
@@ -37,9 +38,16 @@ from aphrodite.assets import (
     validate_image_upload,
     write_asset_file,
 )
+from aphrodite.catalog_import import (
+    CatalogImportError,
+    catalog_csv_template,
+    parse_catalog_csv,
+    split_marketplace_targets,
+)
 from aphrodite.config import Settings
 from aphrodite.domain import (
     AssetRecord,
+    BackgroundIntent,
     ClientCreate,
     ClientRecord,
     JobCreate,
@@ -93,6 +101,25 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     ) -> None:
         expected_token = settings.worker_token or settings.api_token
         _require_bearer_token(authorization=authorization, expected_token=expected_token)
+
+    def create_project_job_batch_record(
+        *,
+        project_id: str,
+        payload: ProjectJobBatchCreate,
+    ) -> ProjectJobBatchRecord:
+        try:
+            jobs = store.create_project_job_batch(project_id=project_id, request=payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"project not found: {exc.project_id}",
+            ) from exc
+        except AssetNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"source asset not found: {exc.asset_id}",
+            ) from exc
+        return ProjectJobBatchRecord(project_id=project_id, created=len(jobs), jobs=jobs)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -343,19 +370,59 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         project_id: str,
         payload: ProjectJobBatchCreate,
     ) -> ProjectJobBatchRecord:
-        try:
-            jobs = store.create_project_job_batch(project_id=project_id, request=payload)
-        except ProjectNotFoundError as exc:
+        return create_project_job_batch_record(project_id=project_id, payload=payload)
+
+    @app.get("/v1/catalog-import/template.csv")
+    def catalog_import_template() -> Response:
+        headers = {
+            "Content-Disposition": "attachment; filename=\"aphrodite-catalog-template.csv\""
+        }
+        return Response(
+            catalog_csv_template(),
+            media_type="text/csv; charset=utf-8",
+            headers=headers,
+        )
+
+    @app.post(
+        "/v1/projects/{project_id}/jobs/batch/csv",
+        response_model=ProjectJobBatchRecord,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_api_auth)],
+    )
+    async def create_project_job_batch_from_csv(
+        project_id: str,
+        file: Annotated[UploadFile, File(...)],
+        marketplace_targets: Annotated[str, Form(max_length=500)] = "catalog_square",
+        background_style: Annotated[str, Form(max_length=80)] = "clean_white",
+        background_prompt: Annotated[str | None, Form(max_length=1000)] = None,
+        quantity_per_target: Annotated[int, Form(ge=1, le=8)] = 1,
+        priority: Annotated[int, Form(ge=0, le=10)] = 5,
+    ) -> ProjectJobBatchRecord:
+        content = await file.read(settings.max_upload_bytes + 1)
+        if len(content) > settings.max_upload_bytes:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"project not found: {exc.project_id}",
-            ) from exc
-        except AssetNotFoundError as exc:
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="CSV upload is too large",
+            )
+        try:
+            payload = parse_catalog_csv(
+                content,
+                marketplace_targets=split_marketplace_targets(marketplace_targets),
+                background=BackgroundIntent(style=background_style, prompt=background_prompt),
+                quantity_per_target=quantity_per_target,
+                priority=priority,
+            )
+        except CatalogImportError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"source asset not found: {exc.asset_id}",
+                detail=exc.message,
             ) from exc
-        return ProjectJobBatchRecord(project_id=project_id, created=len(jobs), jobs=jobs)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=exc.errors()[0].get("msg", "invalid CSV defaults"),
+            ) from exc
+        return create_project_job_batch_record(project_id=project_id, payload=payload)
 
     @app.post(
         "/v1/assets",

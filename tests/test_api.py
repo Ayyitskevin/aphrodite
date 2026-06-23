@@ -274,6 +274,96 @@ def test_project_job_batch_rejects_missing_asset_without_partial_jobs(tmp_path: 
     assert jobs.json() == []
 
 
+def test_create_project_job_batch_from_csv(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    client_payload = test_client.post("/v1/clients", json={"name": "CSV Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "CSV Catalog"},
+    ).json()
+    csv_content = (
+        b"name,sku,source_image_uri,marketplace_targets,priority\n"
+        b"CSV tote,CSV-001,file:///media/csv/tote.jpg,,6\n"
+        b"CSV mug,CSV-002,file:///media/csv/mug.jpg,social_square,8\n"
+    )
+
+    response = test_client.post(
+        f"/v1/projects/{project_payload['id']}/jobs/batch/csv",
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+        data={"marketplace_targets": "catalog_square,transparent_cutout", "priority": "5"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["created"] == 2
+    assert [job["product"]["name"] for job in payload["jobs"]] == ["CSV tote", "CSV mug"]
+    assert [variant["target_id"] for variant in payload["jobs"][0]["output_plan"]] == [
+        "catalog_square",
+        "transparent_cutout",
+    ]
+    assert [variant["target_id"] for variant in payload["jobs"][1]["output_plan"]] == [
+        "social_square",
+    ]
+    assert payload["jobs"][1]["priority"] == 8
+
+
+def test_project_job_batch_csv_rejects_missing_asset_without_partial_jobs(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    client_payload = test_client.post("/v1/clients", json={"name": "CSV Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "CSV Catalog"},
+    ).json()
+    csv_content = (
+        b"name,source_image_uri,source_asset_id\n"
+        b"Valid CSV item,file:///media/valid.jpg,\n"
+        b"Missing CSV asset,,missing\n"
+    )
+
+    response = test_client.post(
+        f"/v1/projects/{project_payload['id']}/jobs/batch/csv",
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+    jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]})
+
+    assert response.status_code == 422
+    assert "source asset not found" in response.json()["detail"]
+    assert jobs.status_code == 200
+    assert jobs.json() == []
+
+
+def test_project_job_batch_csv_rejects_invalid_rows(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    client_payload = test_client.post("/v1/clients", json={"name": "CSV Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "CSV Catalog"},
+    ).json()
+
+    response = test_client.post(
+        f"/v1/projects/{project_payload['id']}/jobs/batch/csv",
+        files={
+            "file": (
+                "catalog.csv",
+                b"name,source_image_uri\n,file:///media/missing-name.jpg\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert "row 2: name is required" in response.json()["detail"]
+
+
+def test_catalog_import_template_download(tmp_path: Path) -> None:
+    response = client(tmp_path).get("/v1/catalog-import/template.csv")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.text.startswith("name,sku,category,instructions,source_image_uri")
+
+
 def test_project_job_batch_rejects_missing_project(tmp_path: Path) -> None:
     response = client(tmp_path).post(
         "/v1/projects/missing/jobs/batch",

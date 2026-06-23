@@ -73,6 +73,24 @@ def test_batch_job_route_requires_configured_api_token(tmp_path: Path) -> None:
     assert authorized.status_code == 404
 
 
+def test_batch_csv_route_requires_configured_api_token(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    csv_content = b"name,source_image_uri\nSecure CSV item,file:///media/secure.jpg\n"
+
+    missing = test_client.post(
+        "/v1/projects/missing/jobs/batch/csv",
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+    authorized = test_client.post(
+        "/v1/projects/missing/jobs/batch/csv",
+        headers=API_HEADERS,
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+
+    assert missing.status_code == 401
+    assert authorized.status_code == 404
+
+
 def test_owner_mutation_routes_require_configured_api_token(tmp_path: Path) -> None:
     test_client = client(tmp_path)
 
