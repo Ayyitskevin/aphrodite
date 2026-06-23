@@ -11,8 +11,9 @@ pipeline will build on.
 ## What is in place
 
 - FastAPI service with health and readiness endpoints.
-- SQLite-backed source asset and product photo job persistence.
+- SQLite-backed source asset, product photo job, and generated output persistence.
 - Upload intake for PNG/JPEG product originals with checksum and dimensions.
+- Worker claim contract for renderers with heartbeats, stale claim recovery, and outputs.
 - Domain models for product inputs, source assets, background intent, output variants, and job status.
 - Starter marketplace-style output presets for catalog, social, hero, and transparent
   packshot variants.
@@ -62,6 +63,27 @@ curl -s http://127.0.0.1:8020/v1/jobs \
   }'
 ```
 
+Claim and complete a queued job as a renderer:
+
+```bash
+curl -s http://127.0.0.1:8020/v1/worker/jobs/claim \
+  -H 'Content-Type: application/json' \
+  -d '{"worker_id":"local-renderer"}'
+
+curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "claim_token": "<claim token>",
+    "variant_id": "catalog_square",
+    "storage_path": "outputs/catalog_square.jpg",
+    "content_type": "image/jpeg",
+    "bytes": 1024,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "width": 2000,
+    "height": 2000
+  }'
+```
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -76,6 +98,6 @@ curl -s http://127.0.0.1:8020/v1/jobs \
 
 ## Next build targets
 
-- Add a renderer worker contract with pluggable local or remote generation backends.
+- Add a pluggable local or remote generation backend behind the worker contract.
 - Add QA/export records for approved variants.
 - Add auth and project/client ownership once Aphrodite is wired into the wider stack.

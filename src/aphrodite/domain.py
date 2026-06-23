@@ -19,6 +19,11 @@ class JobStatus(StrEnum):
     CANCELED = "canceled"
 
 
+class OutputStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class AssetRecord(BaseModel):
     id: str
     original_filename: str
@@ -104,6 +109,22 @@ class OutputVariant(BaseModel):
     safe_margin_percent: int
 
 
+class JobOutputRecord(BaseModel):
+    id: str
+    job_id: str
+    variant_id: str
+    status: OutputStatus
+    storage_path: str
+    content_type: str
+    bytes: int
+    sha256: str
+    width: int
+    height: int
+    error: str | None = None
+    created_at: str
+    updated_at: str
+
+
 class JobRecord(BaseModel):
     id: str
     status: JobStatus
@@ -112,7 +133,11 @@ class JobRecord(BaseModel):
     source_asset: AssetRecord | None = None
     marketplace_targets: list[str]
     output_plan: list[OutputVariant]
+    outputs: list[JobOutputRecord] = Field(default_factory=list)
     priority: int
+    claimed_by: str | None = None
+    claimed_at: str | None = None
+    claim_expires_at: str | None = None
     error: str | None = None
     created_at: str
     updated_at: str
@@ -127,6 +152,46 @@ class JobStatusUpdate(BaseModel):
         if self.status == JobStatus.FAILED and not self.error:
             raise ValueError("error is required when status is failed")
         return self
+
+
+class WorkerClaimRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    worker_id: str = Field(min_length=1, max_length=120)
+    claim_ttl_seconds: int = Field(default=300, ge=10, le=3600)
+
+
+class WorkerClaimRefreshRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    claim_token: str = Field(min_length=1, max_length=120)
+    claim_ttl_seconds: int = Field(default=300, ge=10, le=3600)
+
+
+class WorkerJobClaim(BaseModel):
+    job: JobRecord
+    claim_token: str
+    claim_expires_at: str
+
+
+class JobOutputCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    claim_token: str = Field(min_length=1, max_length=120)
+    variant_id: str = Field(min_length=1, max_length=120)
+    storage_path: str = Field(min_length=1, max_length=2048)
+    content_type: str = Field(min_length=1, max_length=120)
+    bytes: int = Field(ge=0)
+    sha256: str = Field(min_length=16, max_length=128)
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+
+
+class JobFailureRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    claim_token: str = Field(min_length=1, max_length=120)
+    error: str = Field(min_length=1, max_length=2000)
 
 
 def build_output_plan(request: JobCreate) -> list[OutputVariant]:

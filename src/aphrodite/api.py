@@ -15,9 +15,21 @@ from aphrodite.assets import (
     write_asset_file,
 )
 from aphrodite.config import Settings
-from aphrodite.domain import AssetRecord, JobCreate, JobRecord, JobStatus, JobStatusUpdate
+from aphrodite.domain import (
+    AssetRecord,
+    JobCreate,
+    JobFailureRequest,
+    JobOutputCreate,
+    JobOutputRecord,
+    JobRecord,
+    JobStatus,
+    JobStatusUpdate,
+    WorkerClaimRefreshRequest,
+    WorkerClaimRequest,
+    WorkerJobClaim,
+)
 from aphrodite.marketplaces import list_marketplace_specs
-from aphrodite.store import AssetNotFoundError, JobStore
+from aphrodite.store import AssetNotFoundError, JobStore, OutputVariantNotFoundError
 
 
 def create_app(settings: Settings | None = None, store: JobStore | None = None) -> FastAPI:
@@ -127,6 +139,57 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         job = store.update_status(job_id, payload.status, error=payload.error)
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        return job
+
+    @app.post("/v1/worker/jobs/claim", response_model=WorkerJobClaim | None)
+    def claim_next_job(payload: WorkerClaimRequest) -> WorkerJobClaim | None:
+        return store.claim_next_job(
+            worker_id=payload.worker_id,
+            claim_ttl_seconds=payload.claim_ttl_seconds,
+        )
+
+    @app.post("/v1/worker/jobs/{job_id}/heartbeat", response_model=WorkerJobClaim)
+    def refresh_job_claim(job_id: str, payload: WorkerClaimRefreshRequest) -> WorkerJobClaim:
+        claim = store.refresh_claim(
+            job_id=job_id,
+            claim_token=payload.claim_token,
+            claim_ttl_seconds=payload.claim_ttl_seconds,
+        )
+        if claim is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="job claim is not active",
+            )
+        return claim
+
+    @app.post("/v1/worker/jobs/{job_id}/outputs", response_model=JobOutputRecord)
+    def complete_job_output(job_id: str, payload: JobOutputCreate) -> JobOutputRecord:
+        try:
+            output = store.complete_job_output(job_id=job_id, output=payload)
+        except OutputVariantNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"output variant not found: {exc.variant_id}",
+            ) from exc
+        if output is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="job claim is not active",
+            )
+        return output
+
+    @app.post("/v1/worker/jobs/{job_id}/fail", response_model=JobRecord)
+    def fail_job(job_id: str, payload: JobFailureRequest) -> JobRecord:
+        job = store.fail_claimed_job(
+            job_id=job_id,
+            claim_token=payload.claim_token,
+            error=payload.error,
+        )
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="job claim is not active",
+            )
         return job
 
     return app
