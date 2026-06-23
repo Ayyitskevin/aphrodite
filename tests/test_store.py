@@ -3,8 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from aphrodite.domain import ClientCreate, JobCreate, JobStatus, ProductInput, ProjectCreate
-from aphrodite.store import AssetNotFoundError, JobStore
+from aphrodite.domain import (
+    ClientCreate,
+    JobCreate,
+    JobStatus,
+    ProductInput,
+    ProjectCreate,
+    ProjectJobBatchCreate,
+    ProjectJobBatchItem,
+)
+from aphrodite.store import AssetNotFoundError, JobStore, ProjectNotFoundError
 
 
 def request() -> JobCreate:
@@ -182,6 +190,88 @@ def test_store_creates_clients_projects_and_filters_owned_jobs(tmp_path: Path) -
     assert [job.id for job in store.list_jobs(client_id=client.id)] == [created.id]
     assert store.list_projects(client_id=client.id) == [project]
     assert store.list_clients(limit=1) == [other_client]
+
+
+def test_store_creates_project_job_batch_atomically(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    client = store.create_client(ClientCreate(name="Batch Client"))
+    project = store.create_project(ProjectCreate(client_id=client.id, name="Batch Catalog"))
+
+    created = store.create_project_job_batch(
+        project_id=project.id,
+        request=ProjectJobBatchCreate(
+            marketplace_targets=["catalog_square", "transparent_cutout"],
+            items=[
+                ProjectJobBatchItem(
+                    product=ProductInput(
+                        name="Batch wallet",
+                        source_image_uri="file:///media/wallet.jpg",
+                    )
+                ),
+                ProjectJobBatchItem(
+                    product=ProductInput(
+                        name="Batch tote",
+                        source_image_uri="file:///media/tote.jpg",
+                    ),
+                    marketplace_targets=["social_square"],
+                    priority=9,
+                ),
+            ],
+        ),
+    )
+
+    assert len(created) == 2
+    assert all(job.project_id == project.id for job in created)
+    assert created[0].project is not None
+    assert created[0].project.client is not None
+    assert created[0].project.client.name == "Batch Client"
+    assert [variant.target_id for variant in created[0].output_plan] == [
+        "catalog_square",
+        "transparent_cutout",
+    ]
+    assert [variant.target_id for variant in created[1].output_plan] == ["social_square"]
+    assert created[1].priority == 9
+
+    with pytest.raises(AssetNotFoundError):
+        store.create_project_job_batch(
+            project_id=project.id,
+            request=ProjectJobBatchCreate(
+                items=[
+                    ProjectJobBatchItem(
+                        product=ProductInput(
+                            name="Valid item",
+                            source_image_uri="file:///media/valid.jpg",
+                        )
+                    ),
+                    ProjectJobBatchItem(
+                        product=ProductInput(name="Missing asset"),
+                        source_asset_id="missing",
+                    ),
+                ],
+            ),
+        )
+    assert len(store.list_jobs(project_id=project.id)) == 2
+
+
+def test_store_project_job_batch_rejects_missing_project(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+
+    with pytest.raises(ProjectNotFoundError):
+        store.create_project_job_batch(
+            project_id="missing",
+            request=ProjectJobBatchCreate(
+                items=[
+                    ProjectJobBatchItem(
+                        product=ProductInput(
+                            name="Batch item",
+                            source_image_uri="file:///media/item.jpg",
+                        )
+                    )
+                ]
+            ),
+        )
 
 
 def test_store_creates_and_loads_assets(tmp_path: Path) -> None:

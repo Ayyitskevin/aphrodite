@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from PIL import Image
+
 from aphrodite.domain import JobRecord, JobStatus, OutputVariant, ProductInput
 from aphrodite.renderers import LocalStubRendererBackend, get_renderer_backend
 
@@ -44,7 +46,9 @@ def test_local_stub_renderer_writes_deterministic_file(tmp_path: Path) -> None:
     assert first.width == 2000
     assert first.bytes == output_path.stat().st_size
     assert len(first.sha256) == 64
-    assert output_path.read_bytes().startswith(b"APHRODITE_LOCAL_STUB_OUTPUT")
+    with Image.open(output_path) as image:
+        assert image.format == "JPEG"
+        assert image.size == (2000, 2000)
 
 
 def test_local_stub_renderer_maps_png_outputs(tmp_path: Path) -> None:
@@ -53,9 +57,13 @@ def test_local_stub_renderer_maps_png_outputs(tmp_path: Path) -> None:
         variant=variant("png"),
     )
 
+    output_path = tmp_path / "media" / rendered.storage_path
+
     assert rendered.storage_path.endswith(".png")
     assert rendered.content_type == "image/png"
-    assert (tmp_path / "media" / rendered.storage_path).exists()
+    assert output_path.exists()
+    with Image.open(output_path) as image:
+        assert image.format == "PNG"
 
 
 def test_local_stub_renderer_sanitizes_variant_paths(tmp_path: Path) -> None:

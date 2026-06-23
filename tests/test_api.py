@@ -190,6 +190,108 @@ def test_create_job_rejects_missing_project(tmp_path: Path) -> None:
     assert "project not found" in response.json()["detail"]
 
 
+def test_create_project_job_batch(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    client_payload = test_client.post("/v1/clients", json={"name": "Batch Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Batch Catalog"},
+    ).json()
+
+    response = test_client.post(
+        f"/v1/projects/{project_payload['id']}/jobs/batch",
+        json={
+            "marketplace_targets": ["catalog_square", "transparent_cutout"],
+            "priority": 6,
+            "items": [
+                {
+                    "product": {
+                        "name": "Batch tote",
+                        "sku": "BATCH-001",
+                        "source_image_uri": "file:///media/batch/tote.jpg",
+                    }
+                },
+                {
+                    "product": {
+                        "name": "Batch mug",
+                        "source_image_uri": "file:///media/batch/mug.jpg",
+                    },
+                    "marketplace_targets": ["social_square"],
+                    "priority": 8,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["project_id"] == project_payload["id"]
+    assert payload["created"] == 2
+    assert [job["product"]["name"] for job in payload["jobs"]] == [
+        "Batch tote",
+        "Batch mug",
+    ]
+    assert payload["jobs"][0]["project"]["client"]["name"] == "Batch Client"
+    assert [variant["target_id"] for variant in payload["jobs"][0]["output_plan"]] == [
+        "catalog_square",
+        "transparent_cutout",
+    ]
+    assert [variant["target_id"] for variant in payload["jobs"][1]["output_plan"]] == [
+        "social_square",
+    ]
+
+
+def test_project_job_batch_rejects_missing_asset_without_partial_jobs(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    client_payload = test_client.post("/v1/clients", json={"name": "Batch Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Batch Catalog"},
+    ).json()
+
+    response = test_client.post(
+        f"/v1/projects/{project_payload['id']}/jobs/batch",
+        json={
+            "items": [
+                {
+                    "product": {
+                        "name": "Valid item",
+                        "source_image_uri": "file:///media/valid.jpg",
+                    }
+                },
+                {
+                    "source_asset_id": "missing",
+                    "product": {"name": "Missing asset"},
+                },
+            ],
+        },
+    )
+    jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]})
+
+    assert response.status_code == 422
+    assert "source asset not found" in response.json()["detail"]
+    assert jobs.status_code == 200
+    assert jobs.json() == []
+
+
+def test_project_job_batch_rejects_missing_project(tmp_path: Path) -> None:
+    response = client(tmp_path).post(
+        "/v1/projects/missing/jobs/batch",
+        json={
+            "items": [
+                {
+                    "product": {
+                        "name": "Batch item",
+                        "source_image_uri": "file:///media/batch/item.jpg",
+                    }
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 404
+
+
 def test_create_get_list_and_update_job(tmp_path: Path) -> None:
     test_client = client(tmp_path)
 

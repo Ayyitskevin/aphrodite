@@ -10,6 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from aphrodite.marketplaces import MARKETPLACE_SPECS, get_marketplace_spec
 
 
+def _validated_marketplace_targets(value: list[str]) -> list[str]:
+    if not value:
+        raise ValueError("at least one marketplace target is required")
+
+    deduped = list(dict.fromkeys(value))
+    unknown = sorted(target for target in deduped if target not in MARKETPLACE_SPECS)
+    if unknown:
+        known = ", ".join(sorted(MARKETPLACE_SPECS))
+        raise ValueError(f"unknown marketplace target(s): {', '.join(unknown)}; known: {known}")
+    return deduped
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     PLANNING = "planning"
@@ -116,21 +128,50 @@ class JobCreate(BaseModel):
     @field_validator("marketplace_targets")
     @classmethod
     def marketplace_targets_must_be_known(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("at least one marketplace target is required")
-
-        deduped = list(dict.fromkeys(value))
-        unknown = sorted(target for target in deduped if target not in MARKETPLACE_SPECS)
-        if unknown:
-            known = ", ".join(sorted(MARKETPLACE_SPECS))
-            raise ValueError(f"unknown marketplace target(s): {', '.join(unknown)}; known: {known}")
-        return deduped
+        return _validated_marketplace_targets(value)
 
     @model_validator(mode="after")
     def source_must_be_known(self) -> JobCreate:
         if self.source_asset_id is None and self.product.source_image_uri is None:
             raise ValueError("source_asset_id or product.source_image_uri is required")
         return self
+
+
+class ProjectJobBatchItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    product: ProductInput
+    source_asset_id: str | None = Field(default=None, min_length=1, max_length=80)
+    marketplace_targets: list[str] | None = None
+    background: BackgroundIntent | None = None
+    quantity_per_target: int | None = Field(default=None, ge=1, le=8)
+    priority: int | None = Field(default=None, ge=0, le=10)
+
+    @field_validator("marketplace_targets")
+    @classmethod
+    def marketplace_targets_must_be_known(cls, value: list[str] | None) -> list[str] | None:
+        return _validated_marketplace_targets(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def source_must_be_known(self) -> ProjectJobBatchItem:
+        if self.source_asset_id is None and self.product.source_image_uri is None:
+            raise ValueError("source_asset_id or product.source_image_uri is required")
+        return self
+
+
+class ProjectJobBatchCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    marketplace_targets: list[str] = Field(default_factory=lambda: ["catalog_square"])
+    background: BackgroundIntent = Field(default_factory=BackgroundIntent)
+    quantity_per_target: int = Field(default=1, ge=1, le=8)
+    priority: int = Field(default=5, ge=0, le=10)
+    items: list[ProjectJobBatchItem] = Field(min_length=1, max_length=100)
+
+    @field_validator("marketplace_targets")
+    @classmethod
+    def marketplace_targets_must_be_known(cls, value: list[str]) -> list[str]:
+        return _validated_marketplace_targets(value)
 
 
 class OutputVariant(BaseModel):
@@ -183,6 +224,12 @@ class JobRecord(BaseModel):
     error: str | None = None
     created_at: str
     updated_at: str
+
+
+class ProjectJobBatchRecord(BaseModel):
+    project_id: str
+    created: int
+    jobs: list[JobRecord]
 
 
 class JobStatusUpdate(BaseModel):

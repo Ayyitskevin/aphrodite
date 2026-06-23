@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Protocol
+
+from PIL import Image, ImageDraw
 
 from aphrodite.domain import JobRecord, OutputVariant
 from aphrodite.storage import output_relative_path, write_output_file
@@ -60,7 +63,7 @@ class LocalStubRendererBackend:
         stored = write_output_file(
             media_root=self.media_root,
             relative_path=storage_path,
-            content=_stub_content(job=job, variant=variant),
+            content=_stub_image(job=job, variant=variant, content_type=content_type),
         )
 
         return RenderedOutput(
@@ -85,7 +88,41 @@ def get_renderer_backend(name: str, *, media_root: str = "media") -> RendererBac
     raise RendererError(f"unknown renderer backend: {name}")
 
 
-def _stub_content(*, job: JobRecord, variant: OutputVariant) -> bytes:
+def _stub_image(*, job: JobRecord, variant: OutputVariant, content_type: str) -> bytes:
+    transparent = content_type == "image/png" and variant.background == "transparent"
+    mode = "RGBA" if transparent else "RGB"
+    background = (255, 255, 255, 0) if transparent else _background_color(variant.background)
+    image = Image.new(mode, (variant.width, variant.height), background)
+    draw = ImageDraw.Draw(image)
+
+    margin_x = max(12, int(variant.width * 0.18))
+    margin_y = max(12, int(variant.height * 0.18))
+    box = (
+        margin_x,
+        margin_y,
+        max(margin_x + 1, variant.width - margin_x),
+        max(margin_y + 1, variant.height - margin_y),
+    )
+    fill = (32, 37, 41, 255) if transparent else (32, 37, 41)
+    outline = (15, 118, 110, 255) if transparent else (15, 118, 110)
+    draw.rounded_rectangle(box, radius=max(8, min(variant.width, variant.height) // 18), fill=fill)
+    draw.rounded_rectangle(
+        (
+            box[0] + max(4, variant.width // 80),
+            box[1] + max(4, variant.height // 80),
+            box[2] - max(4, variant.width // 80),
+            box[3] - max(4, variant.height // 80),
+        ),
+        radius=max(6, min(variant.width, variant.height) // 22),
+        outline=outline,
+        width=max(2, min(variant.width, variant.height) // 120),
+    )
+
+    if content_type == "image/jpeg":
+        image = image.convert("RGB")
+        return _encode_image(image, image_format="JPEG", quality=88)
+    if content_type == "image/png":
+        return _encode_image(image, image_format="PNG")
     return (
         "\n".join(
             [
@@ -93,13 +130,29 @@ def _stub_content(*, job: JobRecord, variant: OutputVariant) -> bytes:
                 f"job={job.id}",
                 f"variant={variant.id}",
                 f"product={job.product.name}",
-                f"size={variant.width}x{variant.height}",
-                f"background={variant.background}",
-                f"format={variant.output_format}",
                 "",
             ]
         )
     ).encode("utf-8")
+
+
+def _background_color(background: str) -> tuple[int, int, int]:
+    if background == "clean_white":
+        return (248, 250, 252)
+    if background == "studio_shadow":
+        return (231, 235, 239)
+    if background == "brand_gradient":
+        return (226, 245, 241)
+    if background == "lifestyle":
+        return (237, 232, 224)
+    return (245, 247, 250)
+
+
+def _encode_image(image: Image.Image, *, image_format: str, quality: int | None = None) -> bytes:
+    with BytesIO() as buffer:
+        kwargs = {"quality": quality} if quality is not None else {}
+        image.save(buffer, format=image_format, **kwargs)
+        return buffer.getvalue()
 
 
 def _extension_for(output_format: str) -> str:

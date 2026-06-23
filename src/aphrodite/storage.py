@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,7 +31,13 @@ def output_relative_path(*, job_id: str, variant_id: str, extension: str) -> str
 def write_output_file(*, media_root: str, relative_path: str, content: bytes) -> StoredFile:
     target = resolve_media_file_path(media_root=media_root, relative_path=relative_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(content)
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp.write_bytes(content)
+        temp.replace(target)
+    except OSError as exc:
+        temp.unlink(missing_ok=True)
+        raise OutputStorageError("failed to write output file") from exc
     return StoredFile(
         relative_path=target.relative_to(Path(media_root).resolve()).as_posix(),
         absolute_path=target,

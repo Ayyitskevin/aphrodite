@@ -47,8 +47,9 @@ Claims are short-lived and token-scoped. A queued job can be claimed once, and a
 while the worker holds an active claim token.
 
 Jobs can be linked to a project, and projects belong to clients. The API and admin
-job index can filter by either `project_id` or `client_id`, which gives the next batch
-catalog importer a durable ownership target.
+job index can filter by either `project_id` or `client_id`. Batch creation expands a
+project catalog request into normal queued jobs in one transaction, so renderers keep the
+same claim and output contract.
 
 Completed outputs start in `pending_review`. Admin review actions can approve or reject
 each variant with an optional note, and approved media can be downloaded individually or

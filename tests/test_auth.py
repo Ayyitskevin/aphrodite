@@ -49,6 +49,30 @@ def test_tokens_unset_leave_local_mutations_open(tmp_path: Path) -> None:
     assert claim_response.status_code == 200
 
 
+def test_batch_job_route_requires_configured_api_token(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    payload = {
+        "items": [
+            {
+                "product": {
+                    "name": "Secure batch item",
+                    "source_image_uri": "file:///media/secure.jpg",
+                }
+            }
+        ]
+    }
+
+    missing = test_client.post("/v1/projects/missing/jobs/batch", json=payload)
+    authorized = test_client.post(
+        "/v1/projects/missing/jobs/batch",
+        headers=API_HEADERS,
+        json=payload,
+    )
+
+    assert missing.status_code == 401
+    assert authorized.status_code == 404
+
+
 def test_owner_mutation_routes_require_configured_api_token(tmp_path: Path) -> None:
     test_client = client(tmp_path)
 

@@ -51,6 +51,8 @@ from aphrodite.domain import (
     JobStatusUpdate,
     OutputReviewStatus,
     ProjectCreate,
+    ProjectJobBatchCreate,
+    ProjectJobBatchRecord,
     ProjectRecord,
     WorkerClaimRefreshRequest,
     WorkerClaimRequest,
@@ -330,6 +332,30 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         if project is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
         return project
+
+    @app.post(
+        "/v1/projects/{project_id}/jobs/batch",
+        response_model=ProjectJobBatchRecord,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def create_project_job_batch(
+        project_id: str,
+        payload: ProjectJobBatchCreate,
+    ) -> ProjectJobBatchRecord:
+        try:
+            jobs = store.create_project_job_batch(project_id=project_id, request=payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"project not found: {exc.project_id}",
+            ) from exc
+        except AssetNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"source asset not found: {exc.asset_id}",
+            ) from exc
+        return ProjectJobBatchRecord(project_id=project_id, created=len(jobs), jobs=jobs)
 
     @app.post(
         "/v1/assets",

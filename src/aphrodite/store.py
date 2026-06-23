@@ -24,6 +24,7 @@ from aphrodite.domain import (
     OutputVariant,
     ProductInput,
     ProjectCreate,
+    ProjectJobBatchCreate,
     ProjectRecord,
     WorkerJobClaim,
     build_output_plan,
@@ -438,6 +439,89 @@ class JobStore:
             )
 
         return job
+
+    def create_project_job_batch(
+        self,
+        *,
+        project_id: str,
+        request: ProjectJobBatchCreate,
+    ) -> list[JobRecord]:
+        project = self.get_project(project_id)
+        if project is None:
+            raise ProjectNotFoundError(project_id)
+
+        prepared: list[tuple[JobCreate, AssetRecord | None, list[OutputVariant]]] = []
+        for item in request.items:
+            job_request = JobCreate(
+                product=item.product,
+                source_asset_id=item.source_asset_id,
+                project_id=project_id,
+                marketplace_targets=item.marketplace_targets or request.marketplace_targets,
+                background=item.background or request.background,
+                quantity_per_target=item.quantity_per_target or request.quantity_per_target,
+                priority=item.priority if item.priority is not None else request.priority,
+            )
+            source_asset = None
+            if job_request.source_asset_id is not None:
+                source_asset = self.get_asset(job_request.source_asset_id)
+                if source_asset is None:
+                    raise AssetNotFoundError(job_request.source_asset_id)
+            prepared.append((job_request, source_asset, build_output_plan(job_request)))
+
+        now = _utc_now()
+        jobs: list[JobRecord] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for job_request, source_asset, output_plan in prepared:
+                job = JobRecord(
+                    id=str(uuid.uuid4()),
+                    status=JobStatus.QUEUED,
+                    product=job_request.product,
+                    source_asset_id=job_request.source_asset_id,
+                    source_asset=source_asset,
+                    project_id=project_id,
+                    project=project,
+                    marketplace_targets=job_request.marketplace_targets,
+                    output_plan=output_plan,
+                    priority=job_request.priority,
+                    created_at=now,
+                    updated_at=now,
+                )
+                source_image_uri = (
+                    job_request.product.source_image_uri
+                    or f"asset://{job_request.source_asset_id}"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO jobs (
+                      id, status, product_name, product_sku, source_image_uri, source_asset_id,
+                      project_id, payload_json, output_plan_json, priority, error, created_at,
+                      updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job.id,
+                        job.status.value,
+                        job_request.product.name,
+                        job_request.product.sku,
+                        source_image_uri,
+                        job_request.source_asset_id,
+                        project_id,
+                        json.dumps(_jsonable(job_request), sort_keys=True),
+                        json.dumps(
+                            [_jsonable(variant) for variant in output_plan],
+                            sort_keys=True,
+                        ),
+                        job_request.priority,
+                        None,
+                        now,
+                        now,
+                    ),
+                )
+                jobs.append(job)
+
+        return jobs
 
     def get_job(self, job_id: str) -> JobRecord | None:
         with self._connect() as conn:

@@ -74,7 +74,36 @@ curl -s http://127.0.0.1:8020/v1/projects \
   -d '{"client_id":"<client id>","name":"Spring catalog","external_id":"catalog-001"}'
 ```
 
-Create a generation job:
+Create a batch of project-owned generation jobs:
+
+```bash
+curl -s http://127.0.0.1:8020/v1/projects/<project id>/jobs/batch \
+  -H "Authorization: Bearer $APHRODITE_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "marketplace_targets": ["catalog_square", "transparent_cutout"],
+    "priority": 6,
+    "items": [
+      {
+        "product": {
+          "name": "Matte ceramic mug",
+          "sku": "MUG-001",
+          "source_image_uri": "file:///media/mug/source.jpg"
+        }
+      },
+      {
+        "product": {
+          "name": "Canvas tote",
+          "sku": "TOTE-001",
+          "source_image_uri": "file:///media/tote/source.jpg"
+        },
+        "marketplace_targets": ["social_square"]
+      }
+    ]
+  }'
+```
+
+Create a single generation job:
 
 ```bash
 curl -s http://127.0.0.1:8020/v1/jobs \
@@ -169,5 +198,5 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add batch job creation for product catalogs.
 - Add project-level export bundles and review dashboards.
+- Add CSV/Sheet import helpers for catalog batches.
