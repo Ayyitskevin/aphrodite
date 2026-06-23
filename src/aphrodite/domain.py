@@ -24,6 +24,12 @@ class OutputStatus(StrEnum):
     FAILED = "failed"
 
 
+class OutputReviewStatus(StrEnum):
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class AssetRecord(BaseModel):
     id: str
     original_filename: str
@@ -121,6 +127,9 @@ class JobOutputRecord(BaseModel):
     width: int
     height: int
     error: str | None = None
+    review_status: OutputReviewStatus = OutputReviewStatus.PENDING_REVIEW
+    review_note: str | None = None
+    reviewed_at: str | None = None
     created_at: str
     updated_at: str
 

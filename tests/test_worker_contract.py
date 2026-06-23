@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-from aphrodite.domain import JobCreate, JobOutputCreate, JobStatus, ProductInput
+from aphrodite.domain import JobCreate, JobOutputCreate, JobStatus, OutputReviewStatus, ProductInput
 from aphrodite.store import JobStore, OutputVariantNotFoundError
 
 
@@ -95,6 +95,37 @@ def test_claim_heartbeat_extends_active_claim(tmp_path: Path) -> None:
     assert refreshed.claim_token == claim.claim_token
     assert refreshed.claim_expires_at >= claim.claim_expires_at
     assert wrong_token is None
+
+
+def test_output_review_resets_when_output_is_replaced(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    store.create_job(job_request(quantity=2))
+    claim = store.claim_next_job(worker_id="renderer")
+    assert claim is not None
+
+    first = store.complete_job_output(
+        job_id=claim.job.id,
+        output=output_payload(claim.claim_token, variant_id="catalog_square-1"),
+    )
+    assert first is not None
+    approved = store.review_output(
+        job_id=claim.job.id,
+        variant_id="catalog_square-1",
+        review_status=OutputReviewStatus.APPROVED,
+    )
+    assert approved is not None
+    assert approved.review_status == OutputReviewStatus.APPROVED
+
+    rerendered = store.complete_job_output(
+        job_id=claim.job.id,
+        output=output_payload(claim.claim_token, variant_id="catalog_square-1"),
+    )
+
+    assert rerendered is not None
+    assert rerendered.review_status == OutputReviewStatus.PENDING_REVIEW
+    assert rerendered.review_note is None
+    assert rerendered.reviewed_at is None
 
 
 def test_completing_all_outputs_marks_job_completed(tmp_path: Path) -> None:

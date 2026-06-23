@@ -11,7 +11,7 @@ pipeline will build on.
 ## What is in place
 
 - FastAPI service with health and readiness endpoints.
-- SQLite-backed source asset, product photo job, and generated output persistence.
+- SQLite-backed source asset, product photo job, generated output, review, and export persistence.
 - Upload intake for PNG/JPEG product originals with checksum and dimensions.
 - Worker claim contract for renderers with heartbeats, stale claim recovery, and outputs.
 - Guarded xAI Grok Imagine renderer backend for real generated product outputs.
@@ -41,7 +41,12 @@ curl http://127.0.0.1:8020/readiness
 Admin views:
 
 - `http://127.0.0.1:8020/admin/jobs`
+- `http://127.0.0.1:8020/admin/jobs?review=needs_review`
 - `http://127.0.0.1:8020/admin/spend.json`
+
+Completed outputs enter `pending_review`. Operators can approve or reject variants from
+the job detail page. Only approved outputs are available through the single-output export
+link or the approved-output ZIP export.
 
 Upload a source product image:
 
@@ -148,5 +153,5 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add QA/export records for approved variants.
 - Add project/client ownership once Aphrodite is wired into the wider stack.
+- Add batch job creation for product catalogs.

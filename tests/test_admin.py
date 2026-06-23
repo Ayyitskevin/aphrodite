@@ -1,5 +1,7 @@
 import hashlib
+import io
 import json
+import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -86,6 +88,70 @@ def write_spend(tmp_path: Path, *, job_id: str) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_admin_review_and_export_flow(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    _asset, job = completed_job(test_client, tmp_path)
+
+    detail = test_client.get(f"/admin/jobs/{job['id']}")
+    blocked_export = test_client.get(f"/admin/jobs/{job['id']}/outputs/catalog_square/export")
+    needs_review = test_client.get("/admin/jobs?review=needs_review")
+    approve = test_client.post(f"/admin/jobs/{job['id']}/outputs/catalog_square/approve")
+    approved_job = test_client.get(f"/v1/jobs/{job['id']}").json()
+    export = test_client.get(f"/admin/jobs/{job['id']}/outputs/catalog_square/export")
+    export_zip = test_client.get(f"/admin/jobs/{job['id']}/exports.zip")
+    no_longer_needs_review = test_client.get("/admin/jobs?review=needs_review")
+
+    assert detail.status_code == 200
+    assert "pending review" in detail.text
+    assert "Approve" in detail.text
+    assert "Reject" in detail.text
+    assert blocked_export.status_code == 409
+    assert needs_review.status_code == 200
+    assert "Admin mug" in needs_review.text
+
+    assert approve.status_code == 200
+    assert approved_job["outputs"][0]["review_status"] == "approved"
+    assert export.status_code == 200
+    assert export.headers["content-disposition"].startswith("attachment;")
+    assert export.content == PNG_1X1
+    assert export_zip.status_code == 200
+    assert export_zip.headers["content-type"].startswith("application/zip")
+    with zipfile.ZipFile(io.BytesIO(export_zip.content)) as archive:
+        assert archive.namelist() == ["catalog_square.png"]
+        assert archive.read("catalog_square.png") == PNG_1X1
+    assert "Admin mug" not in no_longer_needs_review.text
+
+
+def test_admin_reject_records_review_note_and_blocks_export(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    _asset, job = completed_job(test_client, tmp_path)
+
+    reject = test_client.post(
+        f"/admin/jobs/{job['id']}/outputs/catalog_square/reject",
+        data={"note": "Logo is clipped"},
+    )
+    rejected_job = test_client.get(f"/v1/jobs/{job['id']}").json()
+    detail = test_client.get(f"/admin/jobs/{job['id']}")
+    export = test_client.get(f"/admin/jobs/{job['id']}/outputs/catalog_square/export")
+
+    assert reject.status_code == 200
+    assert rejected_job["outputs"][0]["review_status"] == "rejected"
+    assert rejected_job["outputs"][0]["review_note"] == "Logo is clipped"
+    assert rejected_job["outputs"][0]["reviewed_at"] is not None
+    assert detail.status_code == 200
+    assert "Logo is clipped" in detail.text
+    assert export.status_code == 409
+
+
+def test_admin_review_missing_output_returns_404(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    _asset, job = completed_job(test_client, tmp_path)
+
+    response = test_client.post(f"/admin/jobs/{job['id']}/outputs/missing/approve")
+
+    assert response.status_code == 404
 
 
 def test_admin_jobs_and_detail_show_completed_job_and_spend(tmp_path: Path, monkeypatch) -> None:

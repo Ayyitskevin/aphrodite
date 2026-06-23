@@ -98,6 +98,40 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
     assert legacy.product.source_image_uri == "file:///legacy/wallet.jpg"
 
 
+def test_store_migrates_output_review_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "aphrodite.db"
+    import sqlite3
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE job_outputs (
+              id TEXT PRIMARY KEY,
+              job_id TEXT NOT NULL,
+              variant_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              storage_path TEXT NOT NULL,
+              content_type TEXT NOT NULL,
+              bytes INTEGER NOT NULL,
+              sha256 TEXT NOT NULL,
+              width INTEGER NOT NULL,
+              height INTEGER NOT NULL,
+              error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(job_id, variant_id)
+            )
+            """
+        )
+
+    store = JobStore(str(db_path))
+    store.initialize()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(job_outputs)").fetchall()}
+    assert {"review_status", "review_note", "reviewed_at"}.issubset(columns)
+
+
 def test_store_creates_and_loads_assets(tmp_path: Path) -> None:
     store = JobStore(str(tmp_path / "aphrodite.db"))
     store.initialize()

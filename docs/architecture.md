@@ -6,8 +6,9 @@ Aphrodite owns the product-photography workflow for e-commerce assets.
 
 The first slices are an API, asset intake, planning service, and renderer worker
 contract. Aphrodite accepts source product image uploads, stores asset metadata, accepts
-product image job requests, expands marketplace-style targets into output variants, and
-lets renderers claim jobs, heartbeat claims, complete outputs, or fail jobs.
+product image job requests, expands marketplace-style targets into output variants, lets
+renderers claim jobs, heartbeat claims, complete outputs, or fail jobs, and gives
+operators an approval gate before exports.
 
 ```text
 source product image -> asset intake -> job request -> output plan -> renderer -> QA/export
@@ -44,3 +45,8 @@ cost ticks in a local JSONL ledger.
 Claims are short-lived and token-scoped. A queued job can be claimed once, and an expired
 `rendering` claim can be recovered by another worker. Output completion is accepted only
 while the worker holds an active claim token.
+
+Completed outputs start in `pending_review`. Admin review actions can approve or reject
+each variant with an optional note, and approved media can be downloaded individually or
+as a ZIP. Replacing a rendered output resets its review state so exports cannot silently
+serve unapproved regenerated media.

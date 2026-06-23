@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import secrets
 import uuid
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from aphrodite import __version__
 from aphrodite.admin import (
@@ -35,6 +47,7 @@ from aphrodite.domain import (
     JobRecord,
     JobStatus,
     JobStatusUpdate,
+    OutputReviewStatus,
     WorkerClaimRefreshRequest,
     WorkerClaimRequest,
     WorkerJobClaim,
@@ -101,11 +114,15 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         response_class=HTMLResponse,
         dependencies=[Depends(require_api_auth)],
     )
-    def admin_jobs(limit: Annotated[int, Query(ge=1, le=100)] = 50) -> HTMLResponse:
+    def admin_jobs(
+        review: Annotated[str | None, Query(pattern="^needs_review$")] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> HTMLResponse:
+        jobs = store.list_jobs(limit=limit)
+        if review == "needs_review":
+            jobs = [job for job in jobs if _job_needs_review(job)]
         spend = _xai_spend_summary(settings.media_root)
-        return HTMLResponse(
-            render_admin_jobs_index(jobs=store.list_jobs(limit=limit), spend=spend)
-        )
+        return HTMLResponse(render_admin_jobs_index(jobs=jobs, spend=spend))
 
     @app.get(
         "/admin/jobs/{job_id}",
@@ -125,6 +142,47 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     )
     def admin_spend_json() -> dict:
         return _xai_spend_summary(settings.media_root).as_dict()
+
+    @app.post(
+        "/admin/jobs/{job_id}/outputs/{variant_id}/approve",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_approve_output(job_id: str, variant_id: str) -> HTMLResponse:
+        output = store.review_output(
+            job_id=job_id,
+            variant_id=variant_id,
+            review_status=OutputReviewStatus.APPROVED,
+        )
+        if output is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        spend = _xai_spend_summary(settings.media_root)
+        return HTMLResponse(render_admin_job_detail(job=job, spend=spend))
+
+    @app.post(
+        "/admin/jobs/{job_id}/outputs/{variant_id}/reject",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_reject_output(
+        job_id: str,
+        variant_id: str,
+        note: Annotated[str | None, Form(max_length=2000)] = None,
+    ) -> HTMLResponse:
+        output = store.review_output(
+            job_id=job_id,
+            variant_id=variant_id,
+            review_status=OutputReviewStatus.REJECTED,
+            note=note,
+        )
+        if output is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        spend = _xai_spend_summary(settings.media_root)
+        return HTMLResponse(render_admin_job_detail(job=job, spend=spend))
 
     @app.get(
         "/admin/assets/{asset_id}/file",
@@ -148,14 +206,69 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         job = store.get_job(job_id)
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
-        output = next((item for item in job.outputs if item.variant_id == variant_id), None)
-        if output is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        output = _job_output_or_404(job, variant_id)
         return _media_file_response(
             media_root=settings.media_root,
             relative_path=output.storage_path,
             media_type=output.content_type,
         )
+
+    @app.get(
+        "/admin/jobs/{job_id}/outputs/{variant_id}/export",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_export_output(job_id: str, variant_id: str) -> FileResponse:
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        output = _job_output_or_404(job, variant_id)
+        _require_approved_output(output)
+        return _media_file_response(
+            media_root=settings.media_root,
+            relative_path=output.storage_path,
+            media_type=output.content_type,
+            disposition="attachment",
+        )
+
+    @app.get(
+        "/admin/jobs/{job_id}/exports.zip",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_export_approved_outputs(job_id: str) -> Response:
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        approved = [
+            output for output in job.outputs if output.review_status == OutputReviewStatus.APPROVED
+        ]
+        if not approved:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no approved outputs found",
+            )
+
+        buffer = BytesIO()
+        try:
+            with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for output in approved:
+                    path = resolve_existing_media_file(
+                        media_root=settings.media_root,
+                        relative_path=output.storage_path,
+                    )
+                    archive.write(path, arcname=Path(output.storage_path).name)
+        except OutputStorageError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="media path is outside the media root",
+            ) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="approved media file not found",
+            ) from exc
+
+        headers = {"Content-Disposition": f'attachment; filename="{job.id}-approved-outputs.zip"'}
+        return Response(buffer.getvalue(), media_type="application/zip", headers=headers)
 
     @app.post(
         "/v1/assets",
@@ -333,7 +446,32 @@ def _xai_spend_summary(media_root: str) -> XAISpendSummary:
     return read_xai_spend_summary(ledger_path=xai_cost_ledger_path(media_root=media_root))
 
 
-def _media_file_response(*, media_root: str, relative_path: str, media_type: str) -> FileResponse:
+def _job_needs_review(job: JobRecord) -> bool:
+    return any(output.review_status == OutputReviewStatus.PENDING_REVIEW for output in job.outputs)
+
+
+def _job_output_or_404(job: JobRecord, variant_id: str) -> JobOutputRecord:
+    output = next((item for item in job.outputs if item.variant_id == variant_id), None)
+    if output is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+    return output
+
+
+def _require_approved_output(output: JobOutputRecord) -> None:
+    if output.review_status != OutputReviewStatus.APPROVED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="output is not approved",
+        )
+
+
+def _media_file_response(
+    *,
+    media_root: str,
+    relative_path: str,
+    media_type: str,
+    disposition: str = "inline",
+) -> FileResponse:
     try:
         path = resolve_existing_media_file(media_root=media_root, relative_path=relative_path)
     except OutputStorageError as exc:
@@ -350,7 +488,7 @@ def _media_file_response(*, media_root: str, relative_path: str, media_type: str
         path,
         media_type=media_type,
         filename=path.name,
-        content_disposition_type="inline",
+        content_disposition_type=disposition,
     )
 
 
