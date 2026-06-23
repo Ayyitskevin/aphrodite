@@ -28,6 +28,8 @@ class Settings:
     service_name: str = "aphrodite"
     env: str = "development"
     db_path: str = "data/aphrodite.db"
+    media_root: str = "media"
+    max_upload_bytes: int = 15_000_000
     host: str = "127.0.0.1"
     port: int = 8020
     reload: bool = False
@@ -37,6 +39,8 @@ class Settings:
         return cls(
             env=os.getenv("APHRODITE_ENV", cls.env),
             db_path=os.getenv("APHRODITE_DB_PATH", cls.db_path),
+            media_root=os.getenv("APHRODITE_MEDIA_ROOT", cls.media_root),
+            max_upload_bytes=_env_int("APHRODITE_MAX_UPLOAD_BYTES", cls.max_upload_bytes),
             host=os.getenv("APHRODITE_HOST", cls.host),
             port=_env_int("APHRODITE_PORT", cls.port),
             reload=_env_bool("APHRODITE_RELOAD", cls.reload),

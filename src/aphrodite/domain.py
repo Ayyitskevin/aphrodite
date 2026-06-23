@@ -19,20 +19,32 @@ class JobStatus(StrEnum):
     CANCELED = "canceled"
 
 
+class AssetRecord(BaseModel):
+    id: str
+    original_filename: str
+    content_type: str
+    storage_path: str
+    bytes: int
+    sha256: str
+    width: int
+    height: int
+    created_at: str
+
+
 class ProductInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=160)
-    source_image_uri: str = Field(min_length=1, max_length=2048)
+    source_image_uri: str | None = Field(default=None, min_length=1, max_length=2048)
     sku: str | None = Field(default=None, max_length=120)
     category: str | None = Field(default=None, max_length=160)
     instructions: str | None = Field(default=None, max_length=2000)
 
     @field_validator("source_image_uri")
     @classmethod
-    def source_image_uri_must_be_actionable(cls, value: str) -> str:
-        if value.strip() == "":
-            raise ValueError("source_image_uri is required")
+    def source_image_uri_must_be_actionable(cls, value: str | None) -> str | None:
+        if value is not None and value.strip() == "":
+            raise ValueError("source_image_uri cannot be blank")
         return value
 
 
@@ -53,6 +65,7 @@ class JobCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     product: ProductInput
+    source_asset_id: str | None = Field(default=None, min_length=1, max_length=80)
     marketplace_targets: list[str] = Field(default_factory=lambda: ["catalog_square"])
     background: BackgroundIntent = Field(default_factory=BackgroundIntent)
     quantity_per_target: int = Field(default=1, ge=1, le=8)
@@ -70,6 +83,12 @@ class JobCreate(BaseModel):
             known = ", ".join(sorted(MARKETPLACE_SPECS))
             raise ValueError(f"unknown marketplace target(s): {', '.join(unknown)}; known: {known}")
         return deduped
+
+    @model_validator(mode="after")
+    def source_must_be_known(self) -> JobCreate:
+        if self.source_asset_id is None and self.product.source_image_uri is None:
+            raise ValueError("source_asset_id or product.source_image_uri is required")
+        return self
 
 
 class OutputVariant(BaseModel):
@@ -89,6 +108,8 @@ class JobRecord(BaseModel):
     id: str
     status: JobStatus
     product: ProductInput
+    source_asset_id: str | None = None
+    source_asset: AssetRecord | None = None
     marketplace_targets: list[str]
     output_plan: list[OutputVariant]
     priority: int

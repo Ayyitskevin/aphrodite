@@ -11,8 +11,9 @@ pipeline will build on.
 ## What is in place
 
 - FastAPI service with health and readiness endpoints.
-- SQLite-backed product photo job persistence.
-- Domain models for product inputs, background intent, output variants, and job status.
+- SQLite-backed source asset and product photo job persistence.
+- Upload intake for PNG/JPEG product originals with checksum and dimensions.
+- Domain models for product inputs, source assets, background intent, output variants, and job status.
 - Starter marketplace-style output presets for catalog, social, hero, and transparent
   packshot variants.
 - Tests for the domain planner, store, and API.
@@ -35,16 +36,23 @@ curl http://127.0.0.1:8020/healthz
 curl http://127.0.0.1:8020/readiness
 ```
 
+Upload a source product image:
+
+```bash
+curl -s http://127.0.0.1:8020/v1/assets \
+  -F file=@/path/to/product.png
+```
+
 Create a generation job:
 
 ```bash
 curl -s http://127.0.0.1:8020/v1/jobs \
   -H 'Content-Type: application/json' \
   -d '{
+    "source_asset_id": "<asset id from /v1/assets>",
     "product": {
       "name": "Matte ceramic mug",
-      "sku": "MUG-001",
-      "source_image_uri": "file:///media/mug/source.jpg"
+      "sku": "MUG-001"
     },
     "marketplace_targets": ["catalog_square", "transparent_cutout"],
     "background": {
@@ -60,13 +68,14 @@ curl -s http://127.0.0.1:8020/v1/jobs \
 | --- | --- | --- |
 | `APHRODITE_ENV` | `development` | Runtime environment label. |
 | `APHRODITE_DB_PATH` | `data/aphrodite.db` | SQLite database path. |
+| `APHRODITE_MEDIA_ROOT` | `media` | Local root for uploaded product originals. |
+| `APHRODITE_MAX_UPLOAD_BYTES` | `15000000` | Maximum upload size for one source image. |
 | `APHRODITE_HOST` | `127.0.0.1` | Host used by the `aphrodite-api` script. |
 | `APHRODITE_PORT` | `8020` | Port used by the `aphrodite-api` script. |
 | `APHRODITE_RELOAD` | `false` | Enables uvicorn reload for local development. |
 
 ## Next build targets
 
-- Add an asset intake layer for uploads and source image metadata.
 - Add a renderer worker contract with pluggable local or remote generation backends.
 - Add QA/export records for approved variants.
 - Add auth and project/client ownership once Aphrodite is wired into the wider stack.

@@ -48,3 +48,18 @@ def test_marketplace_targets_are_deduped() -> None:
     )
 
     assert request.marketplace_targets == ["catalog_square"]
+
+
+def test_job_create_accepts_source_asset_without_source_uri() -> None:
+    request = JobCreate(
+        product=ProductInput(name="Matte ceramic mug"),
+        source_asset_id="asset-123",
+    )
+
+    assert request.source_asset_id == "asset-123"
+    assert request.product.source_image_uri is None
+
+
+def test_job_create_requires_some_source() -> None:
+    with pytest.raises(ValidationError):
+        JobCreate(product=ProductInput(name="Matte ceramic mug"))
