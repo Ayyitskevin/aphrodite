@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 aphrodite-api = "aphrodite.main:main"
+aphrodite-worker = "aphrodite.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aphrodite"]
