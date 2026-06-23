@@ -77,7 +77,7 @@ def read_xai_spend_summary(
 def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) -> str:
     rows = "\n".join(_job_row(job, spend=spend) for job in jobs)
     if not rows:
-        rows = '<tr><td colspan="7" class="muted">No jobs yet.</td></tr>'
+        rows = '<tr><td colspan="8" class="muted">No jobs yet.</td></tr>'
     return _page(
         title="Aphrodite Jobs",
         body=f"""
@@ -97,6 +97,7 @@ def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) ->
               <tr>
                 <th>Product</th>
                 <th>Status</th>
+                <th>Owner</th>
                 <th>Outputs</th>
                 <th>Review</th>
                 <th>Worker</th>
@@ -142,6 +143,8 @@ def render_admin_job_detail(*, job: JobRecord, spend: XAISpendSummary) -> str:
             <div><dt>Status</dt><dd><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></dd></div>
             <div><dt>Job ID</dt><dd>{_h(job.id)}</dd></div>
             <div><dt>SKU</dt><dd>{_h(job.product.sku or "-")}</dd></div>
+            <div><dt>Client</dt><dd>{_client_detail(job)}</dd></div>
+            <div><dt>Project</dt><dd>{_project_detail(job)}</dd></div>
             <div><dt>Worker</dt><dd>{_h(job.claimed_by or "-")}</dd></div>
             <div><dt>Claim expires</dt><dd>{_h(job.claim_expires_at or "-")}</dd></div>
             <div><dt>Updated</dt><dd>{_h(job.updated_at)}</dd></div>
@@ -216,10 +219,12 @@ def _entry_from_payload(payload: Any) -> XAISpendEntry | None:
 def _job_row(job: JobRecord, *, spend: XAISpendSummary) -> str:
     spend_usd = sum(entry.cost_usd for entry in spend.entries if entry.job_id == job.id)
     review = _review_summary(job)
+    ownership = _ownership_summary(job)
     return f"""
     <tr>
       <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.id)}</small></td>
       <td><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></td>
+      <td>{ownership}</td>
       <td>{len(job.outputs)} / {len(job.output_plan)}</td>
       <td>{review}</td>
       <td>{_h(job.claimed_by or "-")}</td>
@@ -227,6 +232,29 @@ def _job_row(job: JobRecord, *, spend: XAISpendSummary) -> str:
       <td>${spend_usd:.4f}</td>
     </tr>
     """
+
+
+def _ownership_summary(job: JobRecord) -> str:
+    if job.project is None:
+        return '<span class="muted">Unassigned</span>'
+    client_label = job.project.client.name if job.project.client is not None else job.project.client_id
+    return (
+        f'<a href="/admin/jobs?client_id={_u(job.project.client_id)}">{_h(client_label)}</a>'
+        f'<small><a href="/admin/jobs?project_id={_u(job.project.id)}">{_h(job.project.name)}</a></small>'
+    )
+
+
+def _client_detail(job: JobRecord) -> str:
+    if job.project is None:
+        return "-"
+    client_label = job.project.client.name if job.project.client is not None else job.project.client_id
+    return f'<a href="/admin/jobs?client_id={_u(job.project.client_id)}">{_h(client_label)}</a>'
+
+
+def _project_detail(job: JobRecord) -> str:
+    if job.project is None:
+        return "-"
+    return f'<a href="/admin/jobs?project_id={_u(job.project.id)}">{_h(job.project.name)}</a>'
 
 
 def _review_summary(job: JobRecord) -> str:

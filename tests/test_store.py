@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from aphrodite.domain import JobCreate, JobStatus, ProductInput
+from aphrodite.domain import ClientCreate, JobCreate, JobStatus, ProductInput, ProjectCreate
 from aphrodite.store import AssetNotFoundError, JobStore
 
 
@@ -95,7 +95,12 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
     legacy = store.get_job("legacy-job")
     assert legacy is not None
     assert legacy.source_asset_id is None
+    assert legacy.project_id is None
     assert legacy.product.source_image_uri == "file:///legacy/wallet.jpg"
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    assert "project_id" in columns
 
 
 def test_store_migrates_output_review_columns(tmp_path: Path) -> None:
@@ -130,6 +135,53 @@ def test_store_migrates_output_review_columns(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(job_outputs)").fetchall()}
     assert {"review_status", "review_note", "reviewed_at"}.issubset(columns)
+
+
+def test_store_creates_clients_projects_and_filters_owned_jobs(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    client = store.create_client(ClientCreate(name="Maison Test", external_id="client-001"))
+    project = store.create_project(
+        ProjectCreate(client_id=client.id, name="Spring catalog", external_id="project-001")
+    )
+    other_client = store.create_client(ClientCreate(name="Other Client"))
+    other_project = store.create_project(
+        ProjectCreate(client_id=other_client.id, name="Other catalog")
+    )
+
+    created = store.create_job(
+        JobCreate(
+            product=ProductInput(
+                name="Leather wallet",
+                source_image_uri="file:///media/wallet/source.jpg",
+            ),
+            project_id=project.id,
+            marketplace_targets=["catalog_square"],
+        )
+    )
+    store.create_job(
+        JobCreate(
+            product=ProductInput(
+                name="Other wallet",
+                source_image_uri="file:///media/other/source.jpg",
+            ),
+            project_id=other_project.id,
+            marketplace_targets=["catalog_square"],
+        )
+    )
+
+    loaded = store.get_job(created.id)
+
+    assert loaded is not None
+    assert loaded.project_id == project.id
+    assert loaded.project is not None
+    assert loaded.project.name == "Spring catalog"
+    assert loaded.project.client is not None
+    assert loaded.project.client.name == "Maison Test"
+    assert [job.id for job in store.list_jobs(project_id=project.id)] == [created.id]
+    assert [job.id for job in store.list_jobs(client_id=client.id)] == [created.id]
+    assert store.list_projects(client_id=client.id) == [project]
+    assert store.list_clients(limit=1) == [other_client]
 
 
 def test_store_creates_and_loads_assets(tmp_path: Path) -> None:

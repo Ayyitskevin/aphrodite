@@ -42,6 +42,36 @@ class AssetRecord(BaseModel):
     created_at: str
 
 
+class ClientCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=160)
+    external_id: str | None = Field(default=None, max_length=160)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class ClientRecord(ClientCreate):
+    id: str
+    created_at: str
+    updated_at: str
+
+
+class ProjectCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    client_id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=160)
+    external_id: str | None = Field(default=None, max_length=160)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class ProjectRecord(ProjectCreate):
+    id: str
+    client: ClientRecord | None = None
+    created_at: str
+    updated_at: str
+
+
 class ProductInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -77,6 +107,7 @@ class JobCreate(BaseModel):
 
     product: ProductInput
     source_asset_id: str | None = Field(default=None, min_length=1, max_length=80)
+    project_id: str | None = Field(default=None, min_length=1, max_length=80)
     marketplace_targets: list[str] = Field(default_factory=lambda: ["catalog_square"])
     background: BackgroundIntent = Field(default_factory=BackgroundIntent)
     quantity_per_target: int = Field(default=1, ge=1, le=8)
@@ -140,6 +171,8 @@ class JobRecord(BaseModel):
     product: ProductInput
     source_asset_id: str | None = None
     source_asset: AssetRecord | None = None
+    project_id: str | None = None
+    project: ProjectRecord | None = None
     marketplace_targets: list[str]
     output_plan: list[OutputVariant]
     outputs: list[JobOutputRecord] = Field(default_factory=list)

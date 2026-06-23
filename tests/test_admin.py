@@ -69,6 +69,56 @@ def completed_job(test_client: TestClient, tmp_path: Path) -> tuple[dict, dict]:
     return upload, test_client.get(f"/v1/jobs/{job['id']}").json()
 
 
+def owned_completed_job(test_client: TestClient, tmp_path: Path) -> tuple[dict, dict, dict]:
+    client_payload = test_client.post("/v1/clients", json={"name": "Admin Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Admin Catalog"},
+    ).json()
+    upload = test_client.post(
+        "/v1/assets",
+        files={"file": ("mug.png", PNG_1X1, "image/png")},
+    ).json()
+    job = test_client.post(
+        "/v1/jobs",
+        json={
+            "source_asset_id": upload["id"],
+            "project_id": project_payload["id"],
+            "product": {"name": "Owned mug", "sku": "OWNED-001"},
+            "marketplace_targets": ["catalog_square"],
+        },
+    ).json()
+    claim = test_client.post(
+        "/v1/worker/jobs/claim",
+        json={"worker_id": "admin-test-renderer"},
+    ).json()
+
+    output_path = f"outputs/{job['id']}/catalog_square.png"
+    absolute_output = tmp_path / "media" / output_path
+    absolute_output.parent.mkdir(parents=True, exist_ok=True)
+    absolute_output.write_bytes(PNG_1X1)
+
+    response = test_client.post(
+        f"/v1/worker/jobs/{job['id']}/outputs",
+        json={
+            "claim_token": claim["claim_token"],
+            "variant_id": "catalog_square",
+            "storage_path": output_path,
+            "content_type": "image/png",
+            "bytes": len(PNG_1X1),
+            "sha256": hashlib.sha256(PNG_1X1).hexdigest(),
+            "width": 1,
+            "height": 1,
+        },
+    )
+    assert response.status_code == 200
+    return (
+        client_payload,
+        project_payload,
+        test_client.get(f"/v1/jobs/{job['id']}").json(),
+    )
+
+
 def write_spend(tmp_path: Path, *, job_id: str) -> None:
     ledger = tmp_path / "media" / ".xai-costs.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +202,27 @@ def test_admin_review_missing_output_returns_404(tmp_path: Path, monkeypatch) ->
     response = test_client.post(f"/admin/jobs/{job['id']}/outputs/missing/approve")
 
     assert response.status_code == 404
+
+
+def test_admin_jobs_show_and_filter_ownership(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload, project_payload, job = owned_completed_job(test_client, tmp_path)
+
+    index = test_client.get("/admin/jobs")
+    by_client = test_client.get("/admin/jobs", params={"client_id": client_payload["id"]})
+    by_project = test_client.get("/admin/jobs", params={"project_id": project_payload["id"]})
+    detail = test_client.get(f"/admin/jobs/{job['id']}")
+
+    assert index.status_code == 200
+    assert "Admin Client" in index.text
+    assert "Admin Catalog" in index.text
+    assert by_client.status_code == 200
+    assert "Owned mug" in by_client.text
+    assert by_project.status_code == 200
+    assert "Owned mug" in by_project.text
+    assert detail.status_code == 200
+    assert "Admin Client" in detail.text
+    assert "Admin Catalog" in detail.text
 
 
 def test_admin_jobs_and_detail_show_completed_job_and_spend(tmp_path: Path, monkeypatch) -> None:

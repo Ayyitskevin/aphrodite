@@ -49,6 +49,20 @@ def test_tokens_unset_leave_local_mutations_open(tmp_path: Path) -> None:
     assert claim_response.status_code == 200
 
 
+def test_owner_mutation_routes_require_configured_api_token(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+
+    missing = test_client.post("/v1/clients", json={"name": "Secure client"})
+    authorized = test_client.post(
+        "/v1/clients",
+        headers=API_HEADERS,
+        json={"name": "Secure client"},
+    )
+
+    assert missing.status_code == 401
+    assert authorized.status_code == 201
+
+
 def test_api_routes_require_configured_api_token(tmp_path: Path) -> None:
     test_client = client(tmp_path)
 

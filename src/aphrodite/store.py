@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from aphrodite.domain import (
     AssetRecord,
+    ClientCreate,
+    ClientRecord,
     JobCreate,
     JobOutputCreate,
     JobOutputRecord,
@@ -21,6 +23,8 @@ from aphrodite.domain import (
     OutputStatus,
     OutputVariant,
     ProductInput,
+    ProjectCreate,
+    ProjectRecord,
     WorkerJobClaim,
     build_output_plan,
 )
@@ -41,6 +45,35 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE INDEX IF NOT EXISTS idx_assets_created_at
   ON assets(created_at);
 
+CREATE TABLE IF NOT EXISTS clients (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  external_id TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_clients_name
+  ON clients(name);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  external_id TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_client
+  ON projects(client_id);
+
+CREATE INDEX IF NOT EXISTS idx_projects_name
+  ON projects(name);
+
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
   status TEXT NOT NULL,
@@ -48,6 +81,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   product_sku TEXT,
   source_image_uri TEXT,
   source_asset_id TEXT,
+  project_id TEXT,
   payload_json TEXT NOT NULL,
   output_plan_json TEXT NOT NULL,
   priority INTEGER NOT NULL,
@@ -58,7 +92,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  FOREIGN KEY(source_asset_id) REFERENCES assets(id)
+  FOREIGN KEY(source_asset_id) REFERENCES assets(id),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status_updated
@@ -94,6 +129,18 @@ class AssetNotFoundError(Exception):
     def __init__(self, asset_id: str) -> None:
         super().__init__(f"asset not found: {asset_id}")
         self.asset_id = asset_id
+
+
+class ClientNotFoundError(Exception):
+    def __init__(self, client_id: str) -> None:
+        super().__init__(f"client not found: {client_id}")
+        self.client_id = client_id
+
+
+class ProjectNotFoundError(Exception):
+    def __init__(self, project_id: str) -> None:
+        super().__init__(f"project not found: {project_id}")
+        self.project_id = project_id
 
 
 class OutputVariantNotFoundError(Exception):
@@ -212,12 +259,138 @@ class JobStore:
             raise AssetNotFoundError(asset_id)
         return asset
 
+    def create_client(
+        self,
+        request: ClientCreate,
+        *,
+        client_id: str | None = None,
+    ) -> ClientRecord:
+        now = _utc_now()
+        client = ClientRecord(
+            id=client_id or str(uuid.uuid4()),
+            name=request.name,
+            external_id=request.external_id,
+            notes=request.notes,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO clients (
+                  id, name, external_id, notes, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    client.id,
+                    client.name,
+                    client.external_id,
+                    client.notes,
+                    client.created_at,
+                    client.updated_at,
+                ),
+            )
+        return client
+
+    def get_client(self, client_id: str) -> ClientRecord | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        return self._row_to_client(row) if row is not None else None
+
+    def list_clients(self, *, limit: int = 50) -> list[ClientRecord]:
+        bounded_limit = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM clients ORDER BY created_at DESC LIMIT ?",
+                (bounded_limit,),
+            ).fetchall()
+        return [self._row_to_client(row) for row in rows]
+
+    def create_project(
+        self,
+        request: ProjectCreate,
+        *,
+        project_id: str | None = None,
+    ) -> ProjectRecord:
+        client = self.get_client(request.client_id)
+        if client is None:
+            raise ClientNotFoundError(request.client_id)
+
+        now = _utc_now()
+        project = ProjectRecord(
+            id=project_id or str(uuid.uuid4()),
+            client_id=request.client_id,
+            client=client,
+            name=request.name,
+            external_id=request.external_id,
+            notes=request.notes,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO projects (
+                  id, client_id, name, external_id, notes, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project.id,
+                    project.client_id,
+                    project.name,
+                    project.external_id,
+                    project.notes,
+                    project.created_at,
+                    project.updated_at,
+                ),
+            )
+        return project
+
+    def get_project(self, project_id: str) -> ProjectRecord | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return self._row_to_project(row) if row is not None else None
+
+    def list_projects(
+        self,
+        *,
+        client_id: str | None = None,
+        limit: int = 50,
+    ) -> list[ProjectRecord]:
+        bounded_limit = max(1, min(limit, 100))
+        with self._connect() as conn:
+            if client_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM projects ORDER BY created_at DESC LIMIT ?",
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                      FROM projects
+                     WHERE client_id = ?
+                     ORDER BY created_at DESC
+                     LIMIT ?
+                    """,
+                    (client_id, bounded_limit),
+                ).fetchall()
+        return [self._row_to_project(row) for row in rows]
+
     def create_job(self, request: JobCreate) -> JobRecord:
         source_asset = None
         if request.source_asset_id is not None:
             source_asset = self.get_asset(request.source_asset_id)
             if source_asset is None:
                 raise AssetNotFoundError(request.source_asset_id)
+
+        project = None
+        if request.project_id is not None:
+            project = self.get_project(request.project_id)
+            if project is None:
+                raise ProjectNotFoundError(request.project_id)
 
         output_plan = build_output_plan(request)
         now = _utc_now()
@@ -227,6 +400,8 @@ class JobStore:
             product=request.product,
             source_asset_id=request.source_asset_id,
             source_asset=source_asset,
+            project_id=request.project_id,
+            project=project,
             marketplace_targets=request.marketplace_targets,
             output_plan=output_plan,
             priority=request.priority,
@@ -240,9 +415,10 @@ class JobStore:
                 """
                 INSERT INTO jobs (
                   id, status, product_name, product_sku, source_image_uri, source_asset_id,
-                  payload_json, output_plan_json, priority, error, created_at, updated_at
+                  project_id, payload_json, output_plan_json, priority, error, created_at,
+                  updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.id,
@@ -251,6 +427,7 @@ class JobStore:
                     request.product.sku,
                     source_image_uri,
                     request.source_asset_id,
+                    request.project_id,
                     json.dumps(_jsonable(request), sort_keys=True),
                     json.dumps([_jsonable(variant) for variant in output_plan], sort_keys=True),
                     request.priority,
@@ -267,20 +444,37 @@ class JobStore:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return self._row_to_job(row) if row is not None else None
 
-    def list_jobs(self, *, status: JobStatus | None = None, limit: int = 50) -> list[JobRecord]:
+    def list_jobs(
+        self,
+        *,
+        status: JobStatus | None = None,
+        project_id: str | None = None,
+        client_id: str | None = None,
+        limit: int = 50,
+    ) -> list[JobRecord]:
         bounded_limit = max(1, min(limit, 100))
+        query = "SELECT jobs.* FROM jobs"
+        params: list[str | int] = []
+        where: list[str] = []
+
+        if client_id is not None:
+            query += " JOIN projects ON projects.id = jobs.project_id"
+            where.append("projects.client_id = ?")
+            params.append(client_id)
+        if project_id is not None:
+            where.append("jobs.project_id = ?")
+            params.append(project_id)
+        if status is not None:
+            where.append("jobs.status = ?")
+            params.append(status.value)
+
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY jobs.created_at DESC LIMIT ?"
+        params.append(bounded_limit)
 
         with self._connect() as conn:
-            if status is None:
-                rows = conn.execute(
-                    "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
-                    (bounded_limit,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                    (status.value, bounded_limit),
-                ).fetchall()
+            rows = conn.execute(query, params).fetchall()
 
         return [self._row_to_job(row) for row in rows]
 
@@ -611,6 +805,7 @@ class JobStore:
             "claim_token": "TEXT",
             "claimed_at": "TEXT",
             "claim_expires_at": "TEXT",
+            "project_id": "TEXT",
         }.items():
             if column not in job_columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
@@ -618,6 +813,7 @@ class JobStore:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_source_asset ON jobs(source_asset_id)"
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id)")
         output_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(job_outputs)").fetchall()
@@ -635,6 +831,29 @@ class JobStore:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_job_outputs_review ON job_outputs(review_status)"
+        )
+
+    @staticmethod
+    def _row_to_client(row: sqlite3.Row) -> ClientRecord:
+        return ClientRecord(
+            id=row["id"],
+            name=row["name"],
+            external_id=row["external_id"],
+            notes=row["notes"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def _row_to_project(self, row: sqlite3.Row) -> ProjectRecord:
+        return ProjectRecord(
+            id=row["id"],
+            client_id=row["client_id"],
+            client=self.get_client(row["client_id"]),
+            name=row["name"],
+            external_id=row["external_id"],
+            notes=row["notes"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     @staticmethod
@@ -675,6 +894,7 @@ class JobStore:
     def _row_to_job(self, row: sqlite3.Row) -> JobRecord:
         payload = json.loads(row["payload_json"])
         source_asset_id = row["source_asset_id"]
+        project_id = row["project_id"]
         output_plan = [
             OutputVariant(**variant)
             for variant in json.loads(row["output_plan_json"])
@@ -685,6 +905,8 @@ class JobStore:
             product=ProductInput(**payload["product"]),
             source_asset_id=source_asset_id,
             source_asset=self.get_asset(source_asset_id) if source_asset_id is not None else None,
+            project_id=project_id,
+            project=self.get_project(project_id) if project_id is not None else None,
             marketplace_targets=payload["marketplace_targets"],
             output_plan=output_plan,
             outputs=self.list_job_outputs(row["id"]),

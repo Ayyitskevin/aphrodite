@@ -40,6 +40,8 @@ from aphrodite.assets import (
 from aphrodite.config import Settings
 from aphrodite.domain import (
     AssetRecord,
+    ClientCreate,
+    ClientRecord,
     JobCreate,
     JobFailureRequest,
     JobOutputCreate,
@@ -48,13 +50,21 @@ from aphrodite.domain import (
     JobStatus,
     JobStatusUpdate,
     OutputReviewStatus,
+    ProjectCreate,
+    ProjectRecord,
     WorkerClaimRefreshRequest,
     WorkerClaimRequest,
     WorkerJobClaim,
 )
 from aphrodite.marketplaces import list_marketplace_specs
 from aphrodite.storage import OutputStorageError, resolve_existing_media_file
-from aphrodite.store import AssetNotFoundError, JobStore, OutputVariantNotFoundError
+from aphrodite.store import (
+    AssetNotFoundError,
+    ClientNotFoundError,
+    JobStore,
+    OutputVariantNotFoundError,
+    ProjectNotFoundError,
+)
 
 
 def create_app(settings: Settings | None = None, store: JobStore | None = None) -> FastAPI:
@@ -116,9 +126,11 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     )
     def admin_jobs(
         review: Annotated[str | None, Query(pattern="^needs_review$")] = None,
+        client_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
+        project_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> HTMLResponse:
-        jobs = store.list_jobs(limit=limit)
+        jobs = store.list_jobs(client_id=client_id, project_id=project_id, limit=limit)
         if review == "needs_review":
             jobs = [job for job in jobs if _job_needs_review(job)]
         spend = _xai_spend_summary(settings.media_root)
@@ -271,6 +283,55 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         return Response(buffer.getvalue(), media_type="application/zip", headers=headers)
 
     @app.post(
+        "/v1/clients",
+        response_model=ClientRecord,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def create_client(payload: ClientCreate) -> ClientRecord:
+        return store.create_client(payload)
+
+    @app.get("/v1/clients", response_model=list[ClientRecord])
+    def list_clients(limit: Annotated[int, Query(ge=1, le=100)] = 50) -> list[ClientRecord]:
+        return store.list_clients(limit=limit)
+
+    @app.get("/v1/clients/{client_id}", response_model=ClientRecord)
+    def get_client(client_id: str) -> ClientRecord:
+        client = store.get_client(client_id)
+        if client is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="client not found")
+        return client
+
+    @app.post(
+        "/v1/projects",
+        response_model=ProjectRecord,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def create_project(payload: ProjectCreate) -> ProjectRecord:
+        try:
+            return store.create_project(payload)
+        except ClientNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"client not found: {exc.client_id}",
+            ) from exc
+
+    @app.get("/v1/projects", response_model=list[ProjectRecord])
+    def list_projects(
+        client_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> list[ProjectRecord]:
+        return store.list_projects(client_id=client_id, limit=limit)
+
+    @app.get("/v1/projects/{project_id}", response_model=ProjectRecord)
+    def get_project(project_id: str) -> ProjectRecord:
+        project = store.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+        return project
+
+    @app.post(
         "/v1/assets",
         response_model=AssetRecord,
         status_code=status.HTTP_201_CREATED,
@@ -346,13 +407,25 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"source asset not found: {exc.asset_id}",
             ) from exc
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"project not found: {exc.project_id}",
+            ) from exc
 
     @app.get("/v1/jobs", response_model=list[JobRecord])
     def list_jobs(
         status_filter: Annotated[JobStatus | None, Query(alias="status")] = None,
+        client_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
+        project_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> list[JobRecord]:
-        return store.list_jobs(status=status_filter, limit=limit)
+        return store.list_jobs(
+            status=status_filter,
+            client_id=client_id,
+            project_id=project_id,
+            limit=limit,
+        )
 
     @app.get("/v1/jobs/{job_id}", response_model=JobRecord)
     def get_job(job_id: str) -> JobRecord:

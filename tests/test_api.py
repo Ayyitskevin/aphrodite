@@ -110,6 +110,86 @@ def test_upload_asset_rejects_oversized_image(tmp_path: Path) -> None:
     assert response.status_code == 413
 
 
+def test_create_clients_projects_and_filter_jobs(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+
+    create_client_response = test_client.post(
+        "/v1/clients",
+        json={"name": "Maison API", "external_id": "client-api"},
+    )
+    assert create_client_response.status_code == 201
+    client_payload = create_client_response.json()
+
+    create_project_response = test_client.post(
+        "/v1/projects",
+        json={
+            "client_id": client_payload["id"],
+            "name": "Summer catalog",
+            "external_id": "project-api",
+        },
+    )
+    assert create_project_response.status_code == 201
+    project_payload = create_project_response.json()
+    assert project_payload["client"]["name"] == "Maison API"
+
+    create_job_response = test_client.post(
+        "/v1/jobs",
+        json={
+            "project_id": project_payload["id"],
+            "product": {
+                "name": "Canvas tote",
+                "source_image_uri": "file:///media/tote/source.jpg",
+            },
+            "marketplace_targets": ["catalog_square"],
+        },
+    )
+    assert create_job_response.status_code == 201
+    job_payload = create_job_response.json()
+    assert job_payload["project_id"] == project_payload["id"]
+    assert job_payload["project"]["client"]["name"] == "Maison API"
+
+    clients = test_client.get("/v1/clients")
+    projects = test_client.get("/v1/projects", params={"client_id": client_payload["id"]})
+    jobs_by_client = test_client.get("/v1/jobs", params={"client_id": client_payload["id"]})
+    jobs_by_project = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]})
+
+    assert clients.status_code == 200
+    assert [item["id"] for item in clients.json()] == [client_payload["id"]]
+    assert projects.status_code == 200
+    assert [item["id"] for item in projects.json()] == [project_payload["id"]]
+    assert jobs_by_client.status_code == 200
+    assert [item["id"] for item in jobs_by_client.json()] == [job_payload["id"]]
+    assert jobs_by_project.status_code == 200
+    assert [item["id"] for item in jobs_by_project.json()] == [job_payload["id"]]
+
+
+def test_create_project_rejects_missing_client(tmp_path: Path) -> None:
+    response = client(tmp_path).post(
+        "/v1/projects",
+        json={"client_id": "missing", "name": "Missing client project"},
+    )
+
+    assert response.status_code == 422
+    assert "client not found" in response.json()["detail"]
+
+
+def test_create_job_rejects_missing_project(tmp_path: Path) -> None:
+    response = client(tmp_path).post(
+        "/v1/jobs",
+        json={
+            "project_id": "missing",
+            "product": {
+                "name": "Canvas tote",
+                "source_image_uri": "file:///media/tote/source.jpg",
+            },
+            "marketplace_targets": ["catalog_square"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "project not found" in response.json()["detail"]
+
+
 def test_create_get_list_and_update_job(tmp_path: Path) -> None:
     test_client = client(tmp_path)
 

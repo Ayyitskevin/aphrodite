@@ -4,14 +4,13 @@ AI product photography for e-commerce: packshots, backgrounds, and marketplace-r
 image variants.
 
 Aphrodite starts as a small service for turning a source product image into a durable
-generation job. The current foundation does not render images yet; it defines the API,
-job persistence, marketplace preset planning, and health checks that the rendering
-pipeline will build on.
+generation job. The foundation now covers API intake, client/project ownership, job
+persistence, marketplace preset planning, renderer worker contracts, review, and export.
 
 ## What is in place
 
 - FastAPI service with health and readiness endpoints.
-- SQLite-backed source asset, product photo job, generated output, review, and export persistence.
+- SQLite-backed client, project, source asset, product photo job, generated output, review, and export persistence.
 - Upload intake for PNG/JPEG product originals with checksum and dimensions.
 - Worker claim contract for renderers with heartbeats, stale claim recovery, and outputs.
 - Guarded xAI Grok Imagine renderer backend for real generated product outputs.
@@ -42,6 +41,8 @@ Admin views:
 
 - `http://127.0.0.1:8020/admin/jobs`
 - `http://127.0.0.1:8020/admin/jobs?review=needs_review`
+- `http://127.0.0.1:8020/admin/jobs?client_id=<client id>`
+- `http://127.0.0.1:8020/admin/jobs?project_id=<project id>`
 - `http://127.0.0.1:8020/admin/spend.json`
 
 Completed outputs enter `pending_review`. Operators can approve or reject variants from
@@ -59,6 +60,20 @@ curl -s http://127.0.0.1:8020/v1/assets \
 Omit the `Authorization` header in local development when `APHRODITE_API_TOKEN`
 is unset.
 
+Create ownership records:
+
+```bash
+curl -s http://127.0.0.1:8020/v1/clients \
+  -H "Authorization: Bearer $APHRODITE_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Maison Example","external_id":"client-001"}'
+
+curl -s http://127.0.0.1:8020/v1/projects \
+  -H "Authorization: Bearer $APHRODITE_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"client_id":"<client id>","name":"Spring catalog","external_id":"catalog-001"}'
+```
+
 Create a generation job:
 
 ```bash
@@ -67,6 +82,7 @@ curl -s http://127.0.0.1:8020/v1/jobs \
   -H 'Content-Type: application/json' \
   -d '{
     "source_asset_id": "<asset id from /v1/assets>",
+    "project_id": "<optional project id>",
     "product": {
       "name": "Matte ceramic mug",
       "sku": "MUG-001"
@@ -153,5 +169,5 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add project/client ownership once Aphrodite is wired into the wider stack.
 - Add batch job creation for product catalogs.
+- Add project-level export bundles and review dashboards.
