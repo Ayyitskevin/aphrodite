@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Protocol
 
 from aphrodite.domain import JobRecord, OutputVariant
+from aphrodite.storage import output_relative_path, write_output_file
 
 
 class RendererError(Exception):
@@ -46,38 +46,56 @@ class RendererBackend(Protocol):
 class LocalStubRendererBackend:
     name = "local_stub"
 
+    def __init__(self, *, media_root: str = "media") -> None:
+        self.media_root = media_root
+
     def render(self, *, job: JobRecord, variant: OutputVariant) -> RenderedOutput:
         extension = _extension_for(variant.output_format)
         content_type = _content_type_for(extension)
-        storage_path = f"outputs/{job.id}/{variant.id}.{extension}"
-        seed = "\n".join(
+        storage_path = output_relative_path(
+            job_id=job.id,
+            variant_id=variant.id,
+            extension=extension,
+        )
+        stored = write_output_file(
+            media_root=self.media_root,
+            relative_path=storage_path,
+            content=_stub_content(job=job, variant=variant),
+        )
+
+        return RenderedOutput(
+            variant_id=variant.id,
+            storage_path=stored.relative_path,
+            content_type=content_type,
+            bytes=stored.bytes,
+            sha256=stored.sha256,
+            width=variant.width,
+            height=variant.height,
+        )
+
+
+def get_renderer_backend(name: str, *, media_root: str = "media") -> RendererBackend:
+    normalized = name.strip().lower()
+    if normalized == "local_stub":
+        return LocalStubRendererBackend(media_root=media_root)
+    raise RendererError(f"unknown renderer backend: {name}")
+
+
+def _stub_content(*, job: JobRecord, variant: OutputVariant) -> bytes:
+    return (
+        "\n".join(
             [
-                "aphrodite-local-stub",
+                "APHRODITE_LOCAL_STUB_OUTPUT",
                 f"job={job.id}",
                 f"variant={variant.id}",
                 f"product={job.product.name}",
                 f"size={variant.width}x{variant.height}",
                 f"background={variant.background}",
                 f"format={variant.output_format}",
+                "",
             ]
-        ).encode("utf-8")
-
-        return RenderedOutput(
-            variant_id=variant.id,
-            storage_path=storage_path,
-            content_type=content_type,
-            bytes=len(seed),
-            sha256=hashlib.sha256(seed).hexdigest(),
-            width=variant.width,
-            height=variant.height,
         )
-
-
-def get_renderer_backend(name: str) -> RendererBackend:
-    normalized = name.strip().lower()
-    if normalized == "local_stub":
-        return LocalStubRendererBackend()
-    raise RendererError(f"unknown renderer backend: {name}")
+    ).encode("utf-8")
 
 
 def _extension_for(output_format: str) -> str:

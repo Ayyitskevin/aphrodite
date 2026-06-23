@@ -28,6 +28,7 @@ class WorkerConfig:
     api_url: str = "http://127.0.0.1:8020"
     worker_id: str = f"aphrodite-worker-{socket.gethostname()}"
     backend: str = "local_stub"
+    media_root: str = "media"
     poll_seconds: float = 5.0
     claim_ttl_seconds: int = 300
     once: bool = False
@@ -38,6 +39,10 @@ class WorkerConfig:
             api_url=os.getenv("APHRODITE_WORKER_API_URL", cls.api_url),
             worker_id=os.getenv("APHRODITE_WORKER_ID", cls.worker_id),
             backend=os.getenv("APHRODITE_WORKER_BACKEND", cls.backend),
+            media_root=os.getenv(
+                "APHRODITE_WORKER_MEDIA_ROOT",
+                os.getenv("APHRODITE_MEDIA_ROOT", cls.media_root),
+            ),
             poll_seconds=_env_float("APHRODITE_WORKER_POLL_SECONDS", cls.poll_seconds),
             claim_ttl_seconds=_env_int(
                 "APHRODITE_WORKER_CLAIM_TTL_SECONDS",
@@ -207,7 +212,7 @@ def run_worker(
     backend: RendererBackend | None = None,
 ) -> int:
     client = client or HttpWorkerApiClient(config.api_url)
-    backend = backend or get_renderer_backend(config.backend)
+    backend = backend or get_renderer_backend(config.backend, media_root=config.media_root)
 
     while True:
         processed = process_next_job(
@@ -228,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-url", default=env_config.api_url)
     parser.add_argument("--worker-id", default=env_config.worker_id)
     parser.add_argument("--backend", default=env_config.backend)
+    parser.add_argument("--media-root", default=env_config.media_root)
     parser.add_argument("--poll-seconds", type=float, default=env_config.poll_seconds)
     parser.add_argument(
         "--claim-ttl-seconds",
@@ -241,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         api_url=args.api_url,
         worker_id=args.worker_id,
         backend=args.backend,
+        media_root=args.media_root,
         poll_seconds=args.poll_seconds,
         claim_ttl_seconds=args.claim_ttl_seconds,
         once=args.once,

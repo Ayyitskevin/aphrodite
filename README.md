@@ -66,7 +66,7 @@ curl -s http://127.0.0.1:8020/v1/jobs \
 Run the local stub renderer worker:
 
 ```bash
-aphrodite-worker --backend local_stub --once
+aphrodite-worker --backend local_stub --media-root media --once
 ```
 
 Claim and complete a queued job manually as a renderer:
@@ -104,13 +104,13 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_WORKER_API_URL` | `http://127.0.0.1:8020` | API base URL used by `aphrodite-worker`. |
 | `APHRODITE_WORKER_ID` | host-derived | Worker identity used when claiming jobs. |
 | `APHRODITE_WORKER_BACKEND` | `local_stub` | Renderer backend used by the worker CLI. |
+| `APHRODITE_WORKER_MEDIA_ROOT` | `media` | Shared media root where worker outputs are written. |
 | `APHRODITE_WORKER_POLL_SECONDS` | `5` | Idle polling delay for the worker CLI. |
 | `APHRODITE_WORKER_CLAIM_TTL_SECONDS` | `300` | Claim heartbeat/expiry window. |
 | `APHRODITE_WORKER_ONCE` | `false` | Process at most one claim and exit. |
 
 ## Next build targets
 
-- Add output file storage for generated artifacts under `media/outputs`.
 - Add a ComfyUI backend behind the renderer interface.
 - Add QA/export records for approved variants.
 - Add auth and project/client ownership once Aphrodite is wired into the wider stack.
