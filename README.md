@@ -41,13 +41,18 @@ Upload a source product image:
 
 ```bash
 curl -s http://127.0.0.1:8020/v1/assets \
+  -H "Authorization: Bearer $APHRODITE_API_TOKEN" \
   -F file=@/path/to/product.png
 ```
+
+Omit the `Authorization` header in local development when `APHRODITE_API_TOKEN`
+is unset.
 
 Create a generation job:
 
 ```bash
 curl -s http://127.0.0.1:8020/v1/jobs \
+  -H "Authorization: Bearer $APHRODITE_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "source_asset_id": "<asset id from /v1/assets>",
@@ -66,17 +71,19 @@ curl -s http://127.0.0.1:8020/v1/jobs \
 Run the local stub renderer worker:
 
 ```bash
-aphrodite-worker --backend local_stub --media-root media --once
+aphrodite-worker --backend local_stub --media-root media --token "$APHRODITE_WORKER_TOKEN" --once
 ```
 
 Claim and complete a queued job manually as a renderer:
 
 ```bash
 curl -s http://127.0.0.1:8020/v1/worker/jobs/claim \
+  -H "Authorization: Bearer $APHRODITE_WORKER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"worker_id":"local-renderer"}'
 
 curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
+  -H "Authorization: Bearer $APHRODITE_WORKER_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
     "claim_token": "<claim token>",
@@ -98,6 +105,8 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_DB_PATH` | `data/aphrodite.db` | SQLite database path. |
 | `APHRODITE_MEDIA_ROOT` | `media` | Local root for uploaded product originals. |
 | `APHRODITE_MAX_UPLOAD_BYTES` | `15000000` | Maximum upload size for one source image. |
+| `APHRODITE_API_TOKEN` | unset | Optional bearer token required for mutating API routes when set. |
+| `APHRODITE_WORKER_TOKEN` | unset | Optional bearer token required for worker routes; falls back to `APHRODITE_API_TOKEN` when unset. |
 | `APHRODITE_HOST` | `127.0.0.1` | Host used by the `aphrodite-api` script. |
 | `APHRODITE_PORT` | `8020` | Port used by the `aphrodite-api` script. |
 | `APHRODITE_RELOAD` | `false` | Enables uvicorn reload for local development. |
@@ -113,4 +122,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 - Add a ComfyUI backend behind the renderer interface.
 - Add QA/export records for approved variants.
-- Add auth and project/client ownership once Aphrodite is wired into the wider stack.
+- Add project/client ownership once Aphrodite is wired into the wider stack.

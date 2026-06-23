@@ -1,15 +1,7 @@
 import pytest
+from image_fixtures import PNG_1X1, TRUNCATED_PNG
 
 from aphrodite.assets import AssetValidationError, validate_image_upload
-
-PNG_1X1 = (
-    b"\x89PNG\r\n\x1a\n"
-    b"\x00\x00\x00\rIHDR"
-    b"\x00\x00\x00\x01"
-    b"\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00"
-    b"\x90wS\xde"
-)
 
 
 def test_validate_png_upload_extracts_metadata() -> None:
@@ -38,6 +30,18 @@ def test_validate_upload_rejects_unsupported_content() -> None:
         )
 
     assert exc.value.status_code == 415
+
+
+def test_validate_upload_rejects_corrupt_image_bytes() -> None:
+    with pytest.raises(AssetValidationError) as exc:
+        validate_image_upload(
+            content=TRUNCATED_PNG,
+            filename="mug.png",
+            declared_content_type="image/png",
+            max_bytes=1024,
+        )
+
+    assert exc.value.status_code == 422
 
 
 def test_validate_upload_rejects_oversized_content() -> None:

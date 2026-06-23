@@ -9,7 +9,13 @@ from aphrodite.domain import (
     WorkerJobClaim,
 )
 from aphrodite.renderers import RenderedOutput
-from aphrodite.worker import WorkerApiError, WorkerConfig, process_next_job, run_worker
+from aphrodite.worker import (
+    HttpWorkerApiClient,
+    WorkerApiError,
+    WorkerConfig,
+    process_next_job,
+    run_worker,
+)
 
 
 def variant(variant_id: str = "catalog_square") -> OutputVariant:
@@ -172,6 +178,47 @@ def test_run_worker_once_exits_after_one_poll() -> None:
     config = WorkerConfig(once=True, poll_seconds=0)
 
     assert run_worker(config=config, client=FakeClient(None), backend=FakeBackend()) == 0
+
+
+def test_worker_config_reads_worker_token(monkeypatch) -> None:
+    monkeypatch.setenv("APHRODITE_WORKER_TOKEN", "worker-secret")
+    monkeypatch.setenv("APHRODITE_API_TOKEN", "api-secret")
+
+    assert WorkerConfig.from_env().token == "worker-secret"
+
+
+def test_worker_config_falls_back_to_api_token(monkeypatch) -> None:
+    monkeypatch.delenv("APHRODITE_WORKER_TOKEN", raising=False)
+    monkeypatch.setenv("APHRODITE_API_TOKEN", "api-secret")
+
+    assert WorkerConfig.from_env().token == "api-secret"
+
+
+def test_http_worker_client_sends_bearer_token(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self) -> bytes:
+            return b"null"
+
+    def fake_urlopen(req, timeout: float):
+        captured["authorization"] = req.get_header("Authorization")
+        captured["timeout"] = str(timeout)
+        return Response()
+
+    monkeypatch.setattr("aphrodite.worker.request.urlopen", fake_urlopen)
+
+    client = HttpWorkerApiClient("http://api", token="worker-secret", timeout=12)
+
+    assert client.claim_next_job(worker_id="worker-a", claim_ttl_seconds=300) is None
+    assert captured["authorization"] == "Bearer worker-secret"
+    assert captured["timeout"] == "12"
 
 
 def test_run_worker_surfaces_fail_update_errors() -> None:

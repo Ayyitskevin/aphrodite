@@ -29,6 +29,7 @@ class WorkerConfig:
     worker_id: str = f"aphrodite-worker-{socket.gethostname()}"
     backend: str = "local_stub"
     media_root: str = "media"
+    token: str | None = None
     poll_seconds: float = 5.0
     claim_ttl_seconds: int = 300
     once: bool = False
@@ -42,6 +43,11 @@ class WorkerConfig:
             media_root=os.getenv(
                 "APHRODITE_WORKER_MEDIA_ROOT",
                 os.getenv("APHRODITE_MEDIA_ROOT", cls.media_root),
+            ),
+            token=(
+                os.getenv("APHRODITE_WORKER_TOKEN")
+                or os.getenv("APHRODITE_API_TOKEN")
+                or None
             ),
             poll_seconds=_env_float("APHRODITE_WORKER_POLL_SECONDS", cls.poll_seconds),
             claim_ttl_seconds=_env_int(
@@ -78,8 +84,15 @@ class WorkerApi(Protocol):
 
 
 class HttpWorkerApiClient:
-    def __init__(self, api_url: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_url: str,
+        *,
+        token: str | None = None,
+        timeout: float = 30.0,
+    ) -> None:
         self.api_url = api_url.rstrip("/")
+        self.token = token
         self.timeout = timeout
 
     def claim_next_job(
@@ -138,10 +151,13 @@ class HttpWorkerApiClient:
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> Any:
         data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         req = request.Request(
             f"{self.api_url}{path}",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -211,7 +227,7 @@ def run_worker(
     client: WorkerApi | None = None,
     backend: RendererBackend | None = None,
 ) -> int:
-    client = client or HttpWorkerApiClient(config.api_url)
+    client = client or HttpWorkerApiClient(config.api_url, token=config.token)
     backend = backend or get_renderer_backend(config.backend, media_root=config.media_root)
 
     while True:
@@ -234,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--worker-id", default=env_config.worker_id)
     parser.add_argument("--backend", default=env_config.backend)
     parser.add_argument("--media-root", default=env_config.media_root)
+    parser.add_argument("--token", default=env_config.token)
     parser.add_argument("--poll-seconds", type=float, default=env_config.poll_seconds)
     parser.add_argument(
         "--claim-ttl-seconds",
@@ -248,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
         worker_id=args.worker_id,
         backend=args.backend,
         media_root=args.media_root,
+        token=args.token,
         poll_seconds=args.poll_seconds,
         claim_ttl_seconds=args.claim_ttl_seconds,
         once=args.once,

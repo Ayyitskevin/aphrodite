@@ -1,18 +1,11 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from image_fixtures import PNG_1X1, TRUNCATED_PNG
 
 from aphrodite.api import create_app
+from aphrodite.assets import AssetStorageError
 from aphrodite.config import Settings
-
-PNG_1X1 = (
-    b"\x89PNG\r\n\x1a\n"
-    b"\x00\x00\x00\rIHDR"
-    b"\x00\x00\x00\x01"
-    b"\x00\x00\x00\x01"
-    b"\x08\x02\x00\x00\x00"
-    b"\x90wS\xde"
-)
 
 
 def client(tmp_path: Path, *, max_upload_bytes: int = 15_000_000) -> TestClient:
@@ -80,6 +73,32 @@ def test_upload_asset_rejects_non_image(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 415
+
+
+def test_upload_asset_rejects_corrupt_image_bytes(tmp_path: Path) -> None:
+    response = client(tmp_path).post(
+        "/v1/assets",
+        files={"file": ("mug.png", TRUNCATED_PNG, "image/png")},
+    )
+
+    assert response.status_code == 422
+
+
+def test_upload_asset_storage_error_does_not_create_asset(tmp_path: Path, monkeypatch) -> None:
+    test_client = client(tmp_path)
+
+    def fail_write_asset_file(**_kwargs):
+        raise AssetStorageError("media root is unavailable")
+
+    monkeypatch.setattr("aphrodite.api.write_asset_file", fail_write_asset_file)
+
+    response = test_client.post(
+        "/v1/assets",
+        files={"file": ("mug.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 500
+    assert test_client.get("/v1/assets").json() == []
 
 
 def test_upload_asset_rejects_oversized_image(tmp_path: Path) -> None:

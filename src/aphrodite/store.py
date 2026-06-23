@@ -145,9 +145,10 @@ class JobStore:
         sha256: str,
         width: int,
         height: int,
+        asset_id: str | None = None,
     ) -> AssetRecord:
         asset = AssetRecord(
-            id=str(uuid.uuid4()),
+            id=asset_id or str(uuid.uuid4()),
             original_filename=original_filename,
             content_type=content_type,
             storage_path=storage_path,
