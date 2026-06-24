@@ -214,6 +214,7 @@ class JobRecord(BaseModel):
     source_asset: AssetRecord | None = None
     project_id: str | None = None
     project: ProjectRecord | None = None
+    batch_id: str | None = None
     marketplace_targets: list[str]
     output_plan: list[OutputVariant]
     outputs: list[JobOutputRecord] = Field(default_factory=list)
@@ -227,9 +228,12 @@ class JobRecord(BaseModel):
 
 
 class ProjectJobBatchRecord(BaseModel):
+    id: str
     project_id: str
+    source: str
     created: int
     jobs: list[JobRecord]
+    created_at: str
 
 
 class JobStatusUpdate(BaseModel):

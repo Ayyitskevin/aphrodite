@@ -132,6 +132,7 @@ def render_admin_project_detail(
     project: ProjectRecord,
     jobs: list[JobRecord],
     spend: XAISpendSummary,
+    batches: list[ProjectJobBatchRecord] | None = None,
     review_filter: OutputReviewStatus | None = None,
     message: str | None = None,
 ) -> str:
@@ -154,6 +155,11 @@ def render_admin_project_detail(
     message_banner = ""
     if message:
         message_banner = f'<section><div class="alert alert-success">{_h(message)}</div></section>'
+    batch_history = _project_batch_history(
+        project=project,
+        batches=batches or [],
+        jobs=jobs,
+    )
 
     export_link = ""
     if _project_approved_output_count(jobs):
@@ -181,6 +187,10 @@ def render_admin_project_detail(
         </section>
         {_project_metrics(jobs)}
         <section>
+          <h2>Import History</h2>
+          {batch_history}
+        </section>
+        <section>
           <h2>Review Queue</h2>
           {_project_review_nav(project=project, review_filter=review_filter)}
           {_project_bulk_review_controls(project=project, jobs=jobs)}
@@ -193,6 +203,60 @@ def render_admin_project_detail(
           <h2>Project Jobs</h2>
           <table>
             <thead><tr><th>Product</th><th>Status</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th></tr></thead>
+            <tbody>{job_rows}</tbody>
+          </table>
+        </section>
+        """,
+    )
+
+
+def render_admin_project_batch_detail(
+    *,
+    project: ProjectRecord,
+    batch: ProjectJobBatchRecord,
+    spend: XAISpendSummary,
+    message: str | None = None,
+) -> str:
+    message_banner = ""
+    if message:
+        message_banner = f'<section><div class="alert alert-success">{_h(message)}</div></section>'
+    counts = _job_status_counts(batch.jobs)
+    job_rows = "\n".join(_batch_job_row(job) for job in batch.jobs)
+    if not job_rows:
+        job_rows = '<tr><td colspan="7" class="muted">No jobs in this batch.</td></tr>'
+    retry_action = _batch_retry_action(project=project, batch=batch)
+    return _page(
+        title=f"Aphrodite Batch {batch.id}",
+        body=f"""
+        <header>
+          <h1>Import Batch</h1>
+          <nav><a href="/admin/projects/{_u(project.id)}">Project dashboard</a><a href="/admin/import?project_id={_u(project.id)}">Import CSV</a><a href="/admin/jobs?project_id={_u(project.id)}">Job list</a></nav>
+        </header>
+        {message_banner}
+        <section class="summary">
+          <dl>
+            <div><dt>Project</dt><dd><a href="/admin/projects/{_u(project.id)}">{_h(project.name)}</a></dd></div>
+            <div><dt>Batch ID</dt><dd>{_h(batch.id)}</dd></div>
+            <div><dt>Source</dt><dd>{_h(_batch_source_label(batch.source))}</dd></div>
+            <div><dt>Jobs</dt><dd>{batch.created}</dd></div>
+            <div><dt>Created</dt><dd>{_h(batch.created_at)}</dd></div>
+            <div><dt>xAI spend</dt><dd>${_project_spend_usd(jobs=batch.jobs, spend=spend):.4f}</dd></div>
+          </dl>
+        </section>
+        <section class="metrics metrics-wide">
+          <div><span>Queued</span><strong>{counts[JobStatus.QUEUED]}</strong></div>
+          <div><span>Rendering</span><strong>{counts[JobStatus.RENDERING]}</strong></div>
+          <div><span>Completed</span><strong>{counts[JobStatus.COMPLETED]}</strong></div>
+          <div><span>Failed</span><strong>{counts[JobStatus.FAILED]}</strong></div>
+        </section>
+        <section>
+          <h2>Retry</h2>
+          {retry_action}
+        </section>
+        <section>
+          <h2>Batch Jobs</h2>
+          <table>
+            <thead><tr><th>Product</th><th>Status</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th><th>Error</th></tr></thead>
             <tbody>{job_rows}</tbody>
           </table>
         </section>
@@ -608,7 +672,11 @@ def _import_result_table(result: ProjectJobBatchRecord) -> str:
         """
         for job in result.jobs
     )
-    project_link = f'<p><a class="button" href="/admin/projects/{_u(result.project_id)}">Open project dashboard</a></p>'
+    links = [
+        f'<a class="button" href="/admin/projects/{_u(result.project_id)}">Open project dashboard</a>',
+        f'<a class="button" href="/admin/projects/{_u(result.project_id)}/batches/{_u(result.id)}">Open import batch</a>',
+    ]
+    project_link = f'<p class="actions-row">{"".join(links)}</p>'
     return f"""
     {project_link}
     <table>
@@ -723,6 +791,106 @@ def _project_bulk_review_controls(*, project: ProjectRecord, jobs: list[JobRecor
         </form>
       </div>
     </div>
+    """
+
+
+def _project_batch_history(
+    *,
+    project: ProjectRecord,
+    batches: list[ProjectJobBatchRecord],
+    jobs: list[JobRecord],
+) -> str:
+    project_retry = _project_retry_action(project=project, jobs=jobs)
+    if not batches:
+        return project_retry + '<p class="muted">No saved imports yet.</p>'
+
+    rows = "\n".join(_project_batch_row(project=project, batch=batch) for batch in batches)
+    return f"""
+    {project_retry}
+    <table>
+      <thead><tr><th>Batch</th><th>Source</th><th>Jobs</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    """
+
+
+def _project_retry_action(*, project: ProjectRecord, jobs: list[JobRecord]) -> str:
+    failed = sum(1 for job in jobs if job.status == JobStatus.FAILED)
+    if failed == 0:
+        return ""
+    plural = "job" if failed == 1 else "jobs"
+    return f"""
+    <div class="alert bulk-review">
+      <strong>{failed} failed project {plural}</strong>
+      <form method="post" action="/admin/projects/{_u(project.id)}/jobs/retry-failed">
+        <button type="submit">Retry failed project jobs</button>
+      </form>
+    </div>
+    """
+
+
+def _project_batch_row(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:
+    counts = _job_status_counts(batch.jobs)
+    return f"""
+    <tr>
+      <td><a href="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}">{_h(batch.id[:8])}</a><small>{_h(batch.id)}</small></td>
+      <td>{_h(_batch_source_label(batch.source))}</td>
+      <td>{batch.created}</td>
+      <td>{_format_status_counts(counts)}</td>
+      <td>{_h(batch.created_at)}</td>
+      <td>{_batch_retry_action(project=project, batch=batch)}</td>
+    </tr>
+    """
+
+
+def _batch_retry_action(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:
+    failed = sum(1 for job in batch.jobs if job.status == JobStatus.FAILED)
+    if failed == 0:
+        return '<span class="muted">No failed jobs</span>'
+    plural = "job" if failed == 1 else "jobs"
+    return f"""
+    <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/retry-failed">
+      <button type="submit">Retry {failed} failed {plural}</button>
+    </form>
+    """
+
+
+def _job_status_counts(jobs: list[JobRecord]) -> dict[JobStatus, int]:
+    return {status: sum(1 for job in jobs if job.status == status) for status in JobStatus}
+
+
+def _format_status_counts(counts: dict[JobStatus, int]) -> str:
+    chips = []
+    for status_value in [
+        JobStatus.QUEUED,
+        JobStatus.RENDERING,
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.CANCELED,
+    ]:
+        count = counts[status_value]
+        if count:
+            chips.append(
+                f'<span class="status status-{_h(status_value.value)}">{count} {_h(status_value.value)}</span>'
+            )
+    return " ".join(chips) if chips else '<span class="muted">No jobs</span>'
+
+
+def _batch_source_label(source: str) -> str:
+    return source.replace("_", " ")
+
+
+def _batch_job_row(job: JobRecord) -> str:
+    return f"""
+    <tr>
+      <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.product.sku or job.id)}</small></td>
+      <td><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></td>
+      <td>{len(job.outputs)} / {len(job.output_plan)}</td>
+      <td>{_review_summary(job)}</td>
+      <td>{job.priority}</td>
+      <td>{_h(job.updated_at)}</td>
+      <td>{_h(job.error or "-")}</td>
+    </tr>
     """
 
 

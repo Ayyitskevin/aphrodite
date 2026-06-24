@@ -471,6 +471,7 @@ def test_admin_import_csv_creates_project_batch(tmp_path: Path, monkeypatch) -> 
     jobs_by_name = {job["product"]["name"]: job for job in jobs}
 
     assert "Imported 2 jobs." in response.text
+    assert "Open import batch" in response.text
     assert "Import tote" in response.text
     assert "Import mug" in response.text
     assert sorted(jobs_by_name) == ["Import mug", "Import tote"]
@@ -481,6 +482,72 @@ def test_admin_import_csv_creates_project_batch(tmp_path: Path, monkeypatch) -> 
         "catalog_square",
         "transparent_cutout",
     ]
+
+
+def test_admin_project_import_history_and_retry_controls(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "History Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "History Catalog"},
+    ).json()
+    csv_content = (
+        b"name,sku,source_image_uri\n"
+        b"History tote,HIST-001,file:///media/history/tote.jpg\n"
+        b"History mug,HIST-002,file:///media/history/mug.jpg\n"
+    )
+    import_response = test_client.post(
+        "/admin/import",
+        data={"project_id": project_payload["id"], "marketplace_targets": ["catalog_square"]},
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+    jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]}).json()
+    jobs_by_name = {job["product"]["name"]: job for job in jobs}
+    batch_id = jobs_by_name["History tote"]["batch_id"]
+    failed_job_id = jobs_by_name["History tote"]["id"]
+    other_job_id = jobs_by_name["History mug"]["id"]
+
+    fail = test_client.patch(
+        f"/v1/jobs/{failed_job_id}/status",
+        json={"status": "failed", "error": "renderer crashed"},
+    )
+    dashboard = test_client.get(f"/admin/projects/{project_payload['id']}")
+    detail = test_client.get(f"/admin/projects/{project_payload['id']}/batches/{batch_id}")
+    retry_batch = test_client.post(
+        f"/admin/projects/{project_payload['id']}/batches/{batch_id}/retry-failed"
+    )
+    requeued = test_client.get(f"/v1/jobs/{failed_job_id}").json()
+
+    second_fail = test_client.patch(
+        f"/v1/jobs/{other_job_id}/status",
+        json={"status": "failed", "error": "second crash"},
+    )
+    retry_project = test_client.post(
+        f"/admin/projects/{project_payload['id']}/jobs/retry-failed"
+    )
+    second_requeued = test_client.get(f"/v1/jobs/{other_job_id}").json()
+
+    assert import_response.status_code == 200
+    assert fail.status_code == 200
+    assert dashboard.status_code == 200
+    assert "Import History" in dashboard.text
+    assert "admin csv" in dashboard.text
+    assert "Retry failed project jobs" in dashboard.text
+    assert "Retry 1 failed job" in dashboard.text
+    assert detail.status_code == 200
+    assert "Import Batch" in detail.text
+    assert "renderer crashed" in detail.text
+    assert retry_batch.status_code == 200
+    assert "Requeued 1 failed job." in retry_batch.text
+    assert requeued["status"] == "queued"
+    assert requeued["error"] is None
+    assert second_fail.status_code == 200
+    assert retry_project.status_code == 200
+    assert "Requeued 1 failed job." in retry_project.text
+    assert second_requeued["status"] == "queued"
 
 
 def test_admin_import_csv_requires_marketplace_target(tmp_path: Path, monkeypatch) -> None:

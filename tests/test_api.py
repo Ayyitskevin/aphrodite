@@ -226,7 +226,11 @@ def test_create_project_job_batch(tmp_path: Path) -> None:
     assert response.status_code == 201
     payload = response.json()
     assert payload["project_id"] == project_payload["id"]
+    assert payload["source"] == "api"
+    assert payload["id"]
+    assert payload["created_at"]
     assert payload["created"] == 2
+    assert payload["jobs"][0]["batch_id"] == payload["id"]
     assert [job["product"]["name"] for job in payload["jobs"]] == [
         "Batch tote",
         "Batch mug",
@@ -239,6 +243,14 @@ def test_create_project_job_batch(tmp_path: Path) -> None:
     assert [variant["target_id"] for variant in payload["jobs"][1]["output_plan"]] == [
         "social_square",
     ]
+    batches = test_client.get(f"/v1/projects/{project_payload['id']}/jobs/batches")
+    batch = test_client.get(
+        f"/v1/projects/{project_payload['id']}/jobs/batches/{payload['id']}"
+    )
+    assert batches.status_code == 200
+    assert [item["id"] for item in batches.json()] == [payload["id"]]
+    assert batch.status_code == 200
+    assert batch.json()["jobs"][1]["product"]["name"] == "Batch mug"
 
 
 def test_project_job_batch_rejects_missing_asset_without_partial_jobs(tmp_path: Path) -> None:
@@ -296,6 +308,7 @@ def test_create_project_job_batch_from_csv(tmp_path: Path) -> None:
     assert response.status_code == 201
     payload = response.json()
     assert payload["created"] == 2
+    assert payload["source"] == "api_csv"
     assert [job["product"]["name"] for job in payload["jobs"]] == ["CSV tote", "CSV mug"]
     assert [variant["target_id"] for variant in payload["jobs"][0]["output_plan"]] == [
         "catalog_square",

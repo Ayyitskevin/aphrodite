@@ -50,7 +50,8 @@ Admin views:
 Completed outputs enter `pending_review`. Operators can approve or reject variants from
 the job detail page or a project dashboard. Only approved outputs are available through
 the single-output export link, job ZIP export, or project ZIP export. Project dashboards
-also include bulk approve/reject actions for all pending outputs in that project.
+also include bulk approve/reject actions for all pending outputs in that project, saved
+import history, and retry controls for failed project or batch jobs.
 
 Upload a source product image:
 
@@ -218,4 +219,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add project-level import history and retry controls.
+- Add batch-level spend and throughput reporting.

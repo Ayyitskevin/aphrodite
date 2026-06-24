@@ -104,11 +104,16 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
     assert legacy is not None
     assert legacy.source_asset_id is None
     assert legacy.project_id is None
+    assert legacy.batch_id is None
     assert legacy.product.source_image_uri == "file:///legacy/wallet.jpg"
 
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        tables = {row[0] for row in table_rows}
     assert "project_id" in columns
+    assert "batch_id" in columns
+    assert "project_job_batches" in tables
 
 
 def test_store_migrates_output_review_columns(tmp_path: Path) -> None:
@@ -223,6 +228,8 @@ def test_store_creates_project_job_batch_atomically(tmp_path: Path) -> None:
 
     assert len(created) == 2
     assert all(job.project_id == project.id for job in created)
+    assert all(job.batch_id == created[0].batch_id for job in created)
+    assert created[0].batch_id is not None
     assert created[0].project is not None
     assert created[0].project.client is not None
     assert created[0].project.client.name == "Batch Client"
@@ -232,6 +239,14 @@ def test_store_creates_project_job_batch_atomically(tmp_path: Path) -> None:
     ]
     assert [variant.target_id for variant in created[1].output_plan] == ["social_square"]
     assert created[1].priority == 9
+
+    batches = store.list_project_job_batches(project_id=project.id)
+    assert len(batches) == 1
+    assert batches[0].id == created[0].batch_id
+    assert batches[0].source == "api"
+    assert batches[0].created == 2
+    assert {job.id for job in batches[0].jobs} == {created[0].id, created[1].id}
+    assert store.get_project_job_batch(batches[0].id) == batches[0]
 
     with pytest.raises(AssetNotFoundError):
         store.create_project_job_batch(
@@ -252,6 +267,46 @@ def test_store_creates_project_job_batch_atomically(tmp_path: Path) -> None:
             ),
         )
     assert len(store.list_jobs(project_id=project.id)) == 2
+
+
+def test_store_retries_failed_project_and_batch_jobs(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    client = store.create_client(ClientCreate(name="Retry Client"))
+    project = store.create_project(ProjectCreate(client_id=client.id, name="Retry Catalog"))
+    created = store.create_project_job_batch(
+        project_id=project.id,
+        request=ProjectJobBatchCreate(
+            items=[
+                ProjectJobBatchItem(
+                    product=ProductInput(
+                        name="Retry failed",
+                        source_image_uri="file:///media/retry-failed.jpg",
+                    )
+                ),
+                ProjectJobBatchItem(
+                    product=ProductInput(
+                        name="Retry queued",
+                        source_image_uri="file:///media/retry-queued.jpg",
+                    )
+                ),
+            ],
+        ),
+        source="admin_csv",
+    )
+    failed = store.update_status(created[0].id, JobStatus.FAILED, error="renderer crashed")
+    assert failed is not None
+
+    retried = store.retry_failed_jobs(project_id=project.id, batch_id=created[0].batch_id)
+
+    assert retried == 1
+    requeued = store.get_job(created[0].id)
+    untouched = store.get_job(created[1].id)
+    assert requeued is not None
+    assert requeued.status == JobStatus.QUEUED
+    assert requeued.error is None
+    assert untouched is not None
+    assert untouched.status == JobStatus.QUEUED
 
 
 def test_store_project_job_batch_rejects_missing_project(tmp_path: Path) -> None:

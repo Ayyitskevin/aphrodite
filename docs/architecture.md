@@ -50,7 +50,10 @@ Jobs can be linked to a project, and projects belong to clients. The API and adm
 job index can filter by either `project_id` or `client_id`. Batch creation expands a
 project catalog request into normal queued jobs in one transaction, so renderers keep the
 same claim and output contract. CSV imports are parsed into the same batch request shape,
-which keeps spreadsheet intake out of worker and renderer code. The admin import screen is a thin HTML shell over that parser and persistence path.
+which keeps spreadsheet intake out of worker and renderer code. Batch records are saved
+with a source label and linked job IDs so project dashboards can show import history and
+batch detail pages. Retry controls only requeue failed jobs, clearing failure and claim
+metadata without touching completed or approved outputs.
 
 Completed outputs start in `pending_review`. Admin review actions can approve or reject
 each variant with an optional note from job or project views. Project views can also

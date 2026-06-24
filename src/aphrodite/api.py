@@ -31,6 +31,7 @@ from aphrodite.admin import (
     render_admin_catalog_import,
     render_admin_job_detail,
     render_admin_jobs_index,
+    render_admin_project_batch_detail,
     render_admin_project_detail,
     xai_cost_ledger_path,
 )
@@ -109,17 +110,30 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         *,
         project_id: str,
         payload: ProjectJobBatchCreate,
+        source: str = "api",
     ) -> ProjectJobBatchRecord:
-        jobs = create_project_job_batch_jobs(project_id=project_id, payload=payload)
-        return ProjectJobBatchRecord(project_id=project_id, created=len(jobs), jobs=jobs)
+        jobs = create_project_job_batch_jobs(project_id=project_id, payload=payload, source=source)
+        batch_id = jobs[0].batch_id if jobs else None
+        batch = store.get_project_job_batch(batch_id) if batch_id is not None else None
+        if batch is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="failed to load created batch",
+            )
+        return batch
 
     def create_project_job_batch_jobs(
         *,
         project_id: str,
         payload: ProjectJobBatchCreate,
+        source: str = "api",
     ) -> list[JobRecord]:
         try:
-            return store.create_project_job_batch(project_id=project_id, request=payload)
+            return store.create_project_job_batch(
+                project_id=project_id,
+                request=payload,
+                source=source,
+            )
         except ProjectNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -146,6 +160,15 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             )
         return job
 
+    def project_batch_or_404(project_id: str, batch_id: str) -> ProjectJobBatchRecord:
+        batch = store.get_project_job_batch(batch_id)
+        if batch is None or batch.project_id != project_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="project batch not found",
+            )
+        return batch
+
     def project_pending_outputs(project_id: str) -> list[tuple[JobRecord, JobOutputRecord]]:
         jobs = store.list_jobs(project_id=project_id, limit=100)
         return [
@@ -164,13 +187,35 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     ) -> HTMLResponse:
         project = project_or_404(project_id)
         jobs = store.list_jobs(project_id=project_id, limit=100)
+        batches = store.list_project_job_batches(project_id=project_id, limit=20)
         spend = _xai_spend_summary(settings.media_root)
         return HTMLResponse(
             render_admin_project_detail(
                 project=project,
                 jobs=jobs,
                 spend=spend,
+                batches=batches,
                 review_filter=review_filter,
+                message=message,
+            ),
+            status_code=status_code,
+        )
+
+    def admin_project_batch_page(
+        *,
+        project_id: str,
+        batch_id: str,
+        message: str | None = None,
+        status_code: int = status.HTTP_200_OK,
+    ) -> HTMLResponse:
+        project = project_or_404(project_id)
+        batch = project_batch_or_404(project_id, batch_id)
+        spend = _xai_spend_summary(settings.media_root)
+        return HTMLResponse(
+            render_admin_project_batch_detail(
+                project=project,
+                batch=batch,
+                spend=spend,
                 message=message,
             ),
             status_code=status_code,
@@ -307,7 +352,11 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 quantity_per_target=quantity_per_target,
                 priority=priority,
             )
-            result = create_project_job_batch_record(project_id=project_id, payload=payload)
+            result = create_project_job_batch_record(
+                project_id=project_id,
+                payload=payload,
+                source="admin_csv",
+            )
         except CatalogImportError as exc:
             return admin_import_page(
                 selected_project_id=project_id,
@@ -361,6 +410,43 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         review: OutputReviewStatus | None = None,
     ) -> HTMLResponse:
         return admin_project_page(project_id=project_id, review_filter=review)
+
+    @app.post(
+        "/admin/projects/{project_id}/jobs/retry-failed",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_retry_failed_jobs(project_id: str) -> HTMLResponse:
+        project_or_404(project_id)
+        retried = store.retry_failed_jobs(project_id=project_id)
+        plural = "job" if retried == 1 else "jobs"
+        return admin_project_page(
+            project_id=project_id,
+            message=f"Requeued {retried} failed {plural}.",
+        )
+
+    @app.get(
+        "/admin/projects/{project_id}/batches/{batch_id}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_batch_detail(project_id: str, batch_id: str) -> HTMLResponse:
+        return admin_project_batch_page(project_id=project_id, batch_id=batch_id)
+
+    @app.post(
+        "/admin/projects/{project_id}/batches/{batch_id}/retry-failed",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_batch_retry_failed_jobs(project_id: str, batch_id: str) -> HTMLResponse:
+        project_batch_or_404(project_id, batch_id)
+        retried = store.retry_failed_jobs(project_id=project_id, batch_id=batch_id)
+        plural = "job" if retried == 1 else "jobs"
+        return admin_project_batch_page(
+            project_id=project_id,
+            batch_id=batch_id,
+            message=f"Requeued {retried} failed {plural}.",
+        )
 
     @app.post(
         "/admin/projects/{project_id}/outputs/approve-pending",
@@ -707,6 +793,25 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
         return project
 
+    @app.get(
+        "/v1/projects/{project_id}/jobs/batches",
+        response_model=list[ProjectJobBatchRecord],
+    )
+    def list_project_job_batches(
+        project_id: str,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> list[ProjectJobBatchRecord]:
+        project_or_404(project_id)
+        return store.list_project_job_batches(project_id=project_id, limit=limit)
+
+    @app.get(
+        "/v1/projects/{project_id}/jobs/batches/{batch_id}",
+        response_model=ProjectJobBatchRecord,
+    )
+    def get_project_job_batch(project_id: str, batch_id: str) -> ProjectJobBatchRecord:
+        project_or_404(project_id)
+        return project_batch_or_404(project_id, batch_id)
+
     @app.post(
         "/v1/projects/{project_id}/jobs/batch",
         response_model=ProjectJobBatchRecord,
@@ -717,7 +822,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         project_id: str,
         payload: ProjectJobBatchCreate,
     ) -> ProjectJobBatchRecord:
-        return create_project_job_batch_record(project_id=project_id, payload=payload)
+        return create_project_job_batch_record(project_id=project_id, payload=payload, source="api")
 
     @app.get("/v1/catalog-import/template.csv")
     def catalog_import_template() -> Response:
@@ -769,7 +874,11 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=exc.errors()[0].get("msg", "invalid CSV defaults"),
             ) from exc
-        return create_project_job_batch_record(project_id=project_id, payload=payload)
+        return create_project_job_batch_record(
+            project_id=project_id,
+            payload=payload,
+            source="api_csv",
+        )
 
     @app.post(
         "/v1/assets",

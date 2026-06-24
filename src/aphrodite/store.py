@@ -25,6 +25,7 @@ from aphrodite.domain import (
     ProductInput,
     ProjectCreate,
     ProjectJobBatchCreate,
+    ProjectJobBatchRecord,
     ProjectRecord,
     WorkerJobClaim,
     build_output_plan,
@@ -75,6 +76,20 @@ CREATE INDEX IF NOT EXISTS idx_projects_client
 CREATE INDEX IF NOT EXISTS idx_projects_name
   ON projects(name);
 
+CREATE TABLE IF NOT EXISTS project_job_batches (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  defaults_json TEXT NOT NULL,
+  item_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_job_batches_project
+  ON project_job_batches(project_id, created_at);
+
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
   status TEXT NOT NULL,
@@ -83,6 +98,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   source_image_uri TEXT,
   source_asset_id TEXT,
   project_id TEXT,
+  batch_id TEXT,
   payload_json TEXT NOT NULL,
   output_plan_json TEXT NOT NULL,
   priority INTEGER NOT NULL,
@@ -94,11 +110,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(source_asset_id) REFERENCES assets(id),
-  FOREIGN KEY(project_id) REFERENCES projects(id)
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(batch_id) REFERENCES project_job_batches(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status_updated
   ON jobs(status, updated_at);
+
 
 CREATE TABLE IF NOT EXISTS job_outputs (
   id TEXT PRIMARY KEY,
@@ -403,6 +421,7 @@ class JobStore:
             source_asset=source_asset,
             project_id=request.project_id,
             project=project,
+            batch_id=None,
             marketplace_targets=request.marketplace_targets,
             output_plan=output_plan,
             priority=request.priority,
@@ -416,10 +435,10 @@ class JobStore:
                 """
                 INSERT INTO jobs (
                   id, status, product_name, product_sku, source_image_uri, source_asset_id,
-                  project_id, payload_json, output_plan_json, priority, error, created_at,
-                  updated_at
+                  project_id, batch_id, payload_json, output_plan_json, priority, error,
+                  created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.id,
@@ -429,6 +448,7 @@ class JobStore:
                     source_image_uri,
                     request.source_asset_id,
                     request.project_id,
+                    None,
                     json.dumps(_jsonable(request), sort_keys=True),
                     json.dumps([_jsonable(variant) for variant in output_plan], sort_keys=True),
                     request.priority,
@@ -445,10 +465,21 @@ class JobStore:
         *,
         project_id: str,
         request: ProjectJobBatchCreate,
+        source: str = "api",
+        batch_id: str | None = None,
     ) -> list[JobRecord]:
         project = self.get_project(project_id)
         if project is None:
             raise ProjectNotFoundError(project_id)
+
+        batch_id = batch_id or str(uuid.uuid4())
+        clean_source = source.strip() if source.strip() else "api"
+        batch_defaults = {
+            "marketplace_targets": request.marketplace_targets,
+            "background": _jsonable(request.background),
+            "quantity_per_target": request.quantity_per_target,
+            "priority": request.priority,
+        }
 
         prepared: list[tuple[JobCreate, AssetRecord | None, list[OutputVariant]]] = []
         for item in request.items:
@@ -472,6 +503,23 @@ class JobStore:
         jobs: list[JobRecord] = []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO project_job_batches (
+                  id, project_id, source, defaults_json, item_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    project_id,
+                    clean_source,
+                    json.dumps(batch_defaults, sort_keys=True),
+                    len(prepared),
+                    now,
+                    now,
+                ),
+            )
             for job_request, source_asset, output_plan in prepared:
                 job = JobRecord(
                     id=str(uuid.uuid4()),
@@ -481,6 +529,7 @@ class JobStore:
                     source_asset=source_asset,
                     project_id=project_id,
                     project=project,
+                    batch_id=batch_id,
                     marketplace_targets=job_request.marketplace_targets,
                     output_plan=output_plan,
                     priority=job_request.priority,
@@ -495,10 +544,10 @@ class JobStore:
                     """
                     INSERT INTO jobs (
                       id, status, product_name, product_sku, source_image_uri, source_asset_id,
-                      project_id, payload_json, output_plan_json, priority, error, created_at,
-                      updated_at
+                      project_id, batch_id, payload_json, output_plan_json, priority, error,
+                      created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job.id,
@@ -508,6 +557,7 @@ class JobStore:
                         source_image_uri,
                         job_request.source_asset_id,
                         project_id,
+                        batch_id,
                         json.dumps(_jsonable(job_request), sort_keys=True),
                         json.dumps(
                             [_jsonable(variant) for variant in output_plan],
@@ -534,6 +584,7 @@ class JobStore:
         status: JobStatus | None = None,
         project_id: str | None = None,
         client_id: str | None = None,
+        batch_id: str | None = None,
         limit: int = 50,
     ) -> list[JobRecord]:
         bounded_limit = max(1, min(limit, 100))
@@ -548,6 +599,9 @@ class JobStore:
         if project_id is not None:
             where.append("jobs.project_id = ?")
             params.append(project_id)
+        if batch_id is not None:
+            where.append("jobs.batch_id = ?")
+            params.append(batch_id)
         if status is not None:
             where.append("jobs.status = ?")
             params.append(status.value)
@@ -561,6 +615,34 @@ class JobStore:
             rows = conn.execute(query, params).fetchall()
 
         return [self._row_to_job(row) for row in rows]
+
+    def get_project_job_batch(self, batch_id: str) -> ProjectJobBatchRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_job_batches WHERE id = ?",
+                (batch_id,),
+            ).fetchone()
+        return self._row_to_project_job_batch(row) if row is not None else None
+
+    def list_project_job_batches(
+        self,
+        *,
+        project_id: str,
+        limit: int = 20,
+    ) -> list[ProjectJobBatchRecord]:
+        bounded_limit = max(1, min(limit, 100))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                  FROM project_job_batches
+                 WHERE project_id = ?
+                 ORDER BY created_at DESC
+                 LIMIT ?
+                """,
+                (project_id, bounded_limit),
+            ).fetchall()
+        return [self._row_to_project_job_batch(row) for row in rows]
 
     def list_job_outputs(self, job_id: str) -> list[JobOutputRecord]:
         with self._connect() as conn:
@@ -864,6 +946,36 @@ class JobStore:
 
         return self.get_job(job_id)
 
+    def retry_failed_jobs(
+        self,
+        *,
+        project_id: str,
+        batch_id: str | None = None,
+    ) -> int:
+        now = _utc_now()
+        params: list[str] = [JobStatus.QUEUED.value, now, project_id, JobStatus.FAILED.value]
+        where = "project_id = ? AND status = ?"
+        if batch_id is not None:
+            where += " AND batch_id = ?"
+            params.append(batch_id)
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE jobs
+                   SET status = ?,
+                       claimed_by = NULL,
+                       claim_token = NULL,
+                       claimed_at = NULL,
+                       claim_expires_at = NULL,
+                       error = NULL,
+                       updated_at = ?
+                 WHERE {where}
+                """,
+                params,
+            )
+        return cursor.rowcount
+
     def _ensure_parent(self) -> None:
         if self.db_path == ":memory:" or self.db_path.startswith("file:"):
             return
@@ -890,6 +1002,7 @@ class JobStore:
             "claimed_at": "TEXT",
             "claim_expires_at": "TEXT",
             "project_id": "TEXT",
+            "batch_id": "TEXT",
         }.items():
             if column not in job_columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
@@ -912,6 +1025,13 @@ class JobStore:
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, claim_expires_at)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_batch ON jobs(batch_id)")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_project_job_batches_project
+              ON project_job_batches(project_id, created_at)
+            """
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_job_outputs_review ON job_outputs(review_status)"
@@ -975,6 +1095,17 @@ class JobStore:
             updated_at=row["updated_at"],
         )
 
+    def _row_to_project_job_batch(self, row: sqlite3.Row) -> ProjectJobBatchRecord:
+        jobs = self.list_jobs(project_id=row["project_id"], batch_id=row["id"], limit=100)
+        return ProjectJobBatchRecord(
+            id=row["id"],
+            project_id=row["project_id"],
+            source=row["source"],
+            created=row["item_count"],
+            jobs=jobs,
+            created_at=row["created_at"],
+        )
+
     def _row_to_job(self, row: sqlite3.Row) -> JobRecord:
         payload = json.loads(row["payload_json"])
         source_asset_id = row["source_asset_id"]
@@ -991,6 +1122,7 @@ class JobStore:
             source_asset=self.get_asset(source_asset_id) if source_asset_id is not None else None,
             project_id=project_id,
             project=self.get_project(project_id) if project_id is not None else None,
+            batch_id=row["batch_id"],
             marketplace_targets=payload["marketplace_targets"],
             output_plan=output_plan,
             outputs=self.list_job_outputs(row["id"]),
