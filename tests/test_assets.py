@@ -1,5 +1,5 @@
 import pytest
-from image_fixtures import PNG_1X1, TRUNCATED_PNG
+from image_fixtures import PNG_1X1, PNG_10X10, TRUNCATED_PNG
 
 from aphrodite.assets import AssetValidationError, validate_image_upload
 
@@ -54,3 +54,31 @@ def test_validate_upload_rejects_oversized_content() -> None:
         )
 
     assert exc.value.status_code == 413
+
+
+def test_validate_upload_rejects_pixel_bomb() -> None:
+    # A tiny file on disk that declares more pixels than the cap allows must be
+    # rejected at intake, before any renderer expands it into memory.
+    with pytest.raises(AssetValidationError) as exc:
+        validate_image_upload(
+            content=PNG_10X10,
+            filename="bomb.png",
+            declared_content_type="image/png",
+            max_bytes=1024,
+            max_pixels=50,
+        )
+
+    assert exc.value.status_code == 413
+
+
+def test_validate_upload_allows_image_within_pixel_cap() -> None:
+    asset = validate_image_upload(
+        content=PNG_10X10,
+        filename="ok.png",
+        declared_content_type="image/png",
+        max_bytes=1024,
+        max_pixels=200,
+    )
+
+    assert asset.width == 10
+    assert asset.height == 10

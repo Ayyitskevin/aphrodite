@@ -40,6 +40,11 @@ class Settings:
     db_path: str = "data/aphrodite.db"
     media_root: str = "media"
     max_upload_bytes: int = 15_000_000
+    # A byte cap alone can't stop a decompression bomb: a tiny, highly-compressible
+    # PNG can declare gigapixel dimensions that only blow up when the renderer
+    # decodes it. Reject on pixel count at intake too. 50MP clears any real product
+    # photo with headroom.
+    max_image_pixels: int = 50_000_000
     api_token: str | None = None
     worker_token: str | None = None
     host: str = "127.0.0.1"
@@ -58,6 +63,7 @@ class Settings:
             db_path=os.getenv("APHRODITE_DB_PATH", cls.db_path),
             media_root=os.getenv("APHRODITE_MEDIA_ROOT", cls.media_root),
             max_upload_bytes=_env_int("APHRODITE_MAX_UPLOAD_BYTES", cls.max_upload_bytes),
+            max_image_pixels=_env_int("APHRODITE_MAX_IMAGE_PIXELS", cls.max_image_pixels),
             api_token=os.getenv("APHRODITE_API_TOKEN") or None,
             worker_token=os.getenv("APHRODITE_WORKER_TOKEN") or None,
             host=os.getenv("APHRODITE_HOST", cls.host),
