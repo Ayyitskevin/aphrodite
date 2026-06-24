@@ -27,6 +27,8 @@ from pydantic import ValidationError
 from aphrodite import __version__
 from aphrodite.admin import (
     XAISpendSummary,
+    project_job_batch_report,
+    project_job_batch_report_csv,
     read_xai_spend_summary,
     render_admin_catalog_import,
     render_admin_job_detail,
@@ -65,6 +67,7 @@ from aphrodite.domain import (
     ProjectCreate,
     ProjectJobBatchCreate,
     ProjectJobBatchRecord,
+    ProjectJobBatchReport,
     ProjectRecord,
     WorkerClaimRefreshRequest,
     WorkerClaimRequest,
@@ -812,6 +815,33 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         project_or_404(project_id)
         return project_batch_or_404(project_id, batch_id)
 
+    @app.get(
+        "/v1/projects/{project_id}/jobs/batches/{batch_id}/report.json",
+        response_model=ProjectJobBatchReport,
+    )
+    def get_project_job_batch_report(
+        project_id: str,
+        batch_id: str,
+    ) -> ProjectJobBatchReport:
+        project_or_404(project_id)
+        batch = project_batch_or_404(project_id, batch_id)
+        return project_job_batch_report(batch=batch, spend=_xai_spend_summary(settings.media_root))
+
+    @app.get("/v1/projects/{project_id}/jobs/batches/{batch_id}/report.csv")
+    def get_project_job_batch_report_csv(project_id: str, batch_id: str) -> Response:
+        project_or_404(project_id)
+        batch = project_batch_or_404(project_id, batch_id)
+        filename = f"{_safe_archive_part(batch.id)}-report.csv"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return Response(
+            project_job_batch_report_csv(
+                batch=batch,
+                spend=_xai_spend_summary(settings.media_root),
+            ),
+            media_type="text/csv; charset=utf-8",
+            headers=headers,
+        )
+
     @app.post(
         "/v1/projects/{project_id}/jobs/batch",
         response_model=ProjectJobBatchRecord,
@@ -1065,7 +1095,10 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
 
 
 def _xai_spend_summary(media_root: str) -> XAISpendSummary:
-    return read_xai_spend_summary(ledger_path=xai_cost_ledger_path(media_root=media_root))
+    return read_xai_spend_summary(
+        ledger_path=xai_cost_ledger_path(media_root=media_root),
+        limit=10_000,
+    )
 
 
 def _job_needs_review(job: JobRecord) -> bool:

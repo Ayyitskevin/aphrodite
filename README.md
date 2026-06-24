@@ -51,7 +51,8 @@ Completed outputs enter `pending_review`. Operators can approve or reject varian
 the job detail page or a project dashboard. Only approved outputs are available through
 the single-output export link, job ZIP export, or project ZIP export. Project dashboards
 also include bulk approve/reject actions for all pending outputs in that project, saved
-import history, and retry controls for failed project or batch jobs.
+import history, retry controls for failed project or batch jobs, and batch-level
+reporting for spend, throughput, approval rate, and status CSV/JSON exports.
 
 Upload a source product image:
 
@@ -219,4 +220,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add batch-level spend and throughput reporting.
+- Add renderer failure classification and batch alerting.

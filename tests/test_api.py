@@ -247,10 +247,26 @@ def test_create_project_job_batch(tmp_path: Path) -> None:
     batch = test_client.get(
         f"/v1/projects/{project_payload['id']}/jobs/batches/{payload['id']}"
     )
+    report = test_client.get(
+        f"/v1/projects/{project_payload['id']}/jobs/batches/{payload['id']}/report.json"
+    )
+    csv_report = test_client.get(
+        f"/v1/projects/{project_payload['id']}/jobs/batches/{payload['id']}/report.csv"
+    )
     assert batches.status_code == 200
     assert [item["id"] for item in batches.json()] == [payload["id"]]
     assert batch.status_code == 200
     assert batch.json()["jobs"][1]["product"]["name"] == "Batch mug"
+    assert report.status_code == 200
+    assert report.json()["job_count"] == 2
+    assert report.json()["planned_output_count"] == 3
+    assert report.json()["output_count"] == 0
+    assert report.json()["status_counts"]["queued"] == 2
+    assert report.json()["xai_cost_usd"] == 0
+    assert csv_report.status_code == 200
+    assert csv_report.headers["content-type"].startswith("text/csv")
+    assert "Batch tote" in csv_report.text
+    assert "batch_xai_cost_usd" in csv_report.text
 
 
 def test_project_job_batch_rejects_missing_asset_without_partial_jobs(tmp_path: Path) -> None:

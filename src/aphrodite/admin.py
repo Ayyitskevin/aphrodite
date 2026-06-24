@@ -4,10 +4,12 @@ from __future__ import annotations
 
 # HTML templates live inline for now to avoid adding a template dependency.
 # ruff: noqa: E501
+import csv
 import json
 from dataclasses import asdict, dataclass
 from datetime import date
 from html import escape
+from io import StringIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -18,6 +20,9 @@ from aphrodite.domain import (
     JobStatus,
     OutputReviewStatus,
     ProjectJobBatchRecord,
+    ProjectJobBatchReport,
+    ProjectJobBatchReviewCounts,
+    ProjectJobBatchStatusCounts,
     ProjectRecord,
 )
 from aphrodite.marketplaces import MarketplaceSpec
@@ -60,6 +65,131 @@ class XAISpendSummary:
 
 def xai_cost_ledger_path(*, media_root: str) -> str | None:
     return XAIImageConfig.from_env(media_root=media_root).cost_ledger_path
+
+
+def project_job_batch_report(
+    *,
+    batch: ProjectJobBatchRecord,
+    spend: XAISpendSummary,
+) -> ProjectJobBatchReport:
+    jobs = batch.jobs
+    outputs = [output for job in jobs for output in job.outputs]
+    status_counts = _job_status_counts(jobs)
+    review_counts = {
+        status: sum(1 for output in outputs if output.review_status == status)
+        for status in OutputReviewStatus
+    }
+    job_ids = {job.id for job in jobs}
+    spend_entries = [entry for entry in spend.entries if entry.job_id in job_ids]
+    spend_ticks = sum(entry.cost_in_usd_ticks for entry in spend_entries)
+    output_count = len(outputs)
+    approved = review_counts[OutputReviewStatus.APPROVED]
+    updated_at_values = [job.updated_at for job in jobs] + [output.updated_at for output in outputs]
+    terminal_statuses = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELED}
+
+    return ProjectJobBatchReport(
+        batch_id=batch.id,
+        project_id=batch.project_id,
+        source=batch.source,
+        created_at=batch.created_at,
+        first_render_at=min((output.created_at for output in outputs), default=None),
+        last_updated_at=max(updated_at_values, default=None),
+        completed_at=(
+            max((job.updated_at for job in jobs), default=None)
+            if jobs and all(job.status in terminal_statuses for job in jobs)
+            else None
+        ),
+        job_count=len(jobs),
+        planned_output_count=sum(len(job.output_plan) for job in jobs),
+        output_count=output_count,
+        pending_review_output_count=review_counts[OutputReviewStatus.PENDING_REVIEW],
+        approved_output_count=approved,
+        rejected_output_count=review_counts[OutputReviewStatus.REJECTED],
+        approval_rate=round(approved / output_count, 4) if output_count else 0.0,
+        xai_cost_usd=_ticks_to_usd(spend_ticks),
+        xai_cost_in_usd_ticks=spend_ticks,
+        status_counts=ProjectJobBatchStatusCounts(
+            queued=status_counts[JobStatus.QUEUED],
+            planning=status_counts[JobStatus.PLANNING],
+            rendering=status_counts[JobStatus.RENDERING],
+            completed=status_counts[JobStatus.COMPLETED],
+            failed=status_counts[JobStatus.FAILED],
+            canceled=status_counts[JobStatus.CANCELED],
+        ),
+        review_counts=ProjectJobBatchReviewCounts(
+            pending_review=review_counts[OutputReviewStatus.PENDING_REVIEW],
+            approved=approved,
+            rejected=review_counts[OutputReviewStatus.REJECTED],
+        ),
+    )
+
+
+def project_job_batch_report_csv(
+    *,
+    batch: ProjectJobBatchRecord,
+    spend: XAISpendSummary,
+) -> str:
+    report = project_job_batch_report(batch=batch, spend=spend)
+    handle = StringIO()
+    fieldnames = [
+        "batch_id",
+        "project_id",
+        "source",
+        "batch_created_at",
+        "batch_completed_at",
+        "batch_xai_cost_usd",
+        "batch_approval_rate",
+        "job_id",
+        "product_name",
+        "sku",
+        "status",
+        "priority",
+        "planned_outputs",
+        "outputs",
+        "pending_review",
+        "approved",
+        "rejected",
+        "job_xai_cost_usd",
+        "updated_at",
+        "error",
+    ]
+    writer = csv.DictWriter(handle, fieldnames=fieldnames)
+    writer.writeheader()
+    for job in batch.jobs:
+        outputs = job.outputs
+        pending = sum(
+            1 for output in outputs if output.review_status == OutputReviewStatus.PENDING_REVIEW
+        )
+        approved = sum(1 for output in outputs if output.review_status == OutputReviewStatus.APPROVED)
+        rejected = sum(1 for output in outputs if output.review_status == OutputReviewStatus.REJECTED)
+        job_ticks = sum(
+            entry.cost_in_usd_ticks for entry in spend.entries if entry.job_id == job.id
+        )
+        writer.writerow(
+            {
+                "batch_id": batch.id,
+                "project_id": batch.project_id,
+                "source": batch.source,
+                "batch_created_at": batch.created_at,
+                "batch_completed_at": report.completed_at or "",
+                "batch_xai_cost_usd": f"{report.xai_cost_usd:.4f}",
+                "batch_approval_rate": f"{report.approval_rate:.4f}",
+                "job_id": job.id,
+                "product_name": job.product.name,
+                "sku": job.product.sku or "",
+                "status": job.status.value,
+                "priority": job.priority,
+                "planned_outputs": len(job.output_plan),
+                "outputs": len(outputs),
+                "pending_review": pending,
+                "approved": approved,
+                "rejected": rejected,
+                "job_xai_cost_usd": f"{_ticks_to_usd(job_ticks):.4f}",
+                "updated_at": job.updated_at,
+                "error": job.error or "",
+            }
+        )
+    return handle.getvalue()
 
 
 def read_xai_spend_summary(
@@ -159,6 +289,7 @@ def render_admin_project_detail(
         project=project,
         batches=batches or [],
         jobs=jobs,
+        spend=spend,
     )
 
     export_link = ""
@@ -220,17 +351,18 @@ def render_admin_project_batch_detail(
     message_banner = ""
     if message:
         message_banner = f'<section><div class="alert alert-success">{_h(message)}</div></section>'
-    counts = _job_status_counts(batch.jobs)
+    report = project_job_batch_report(batch=batch, spend=spend)
     job_rows = "\n".join(_batch_job_row(job) for job in batch.jobs)
     if not job_rows:
         job_rows = '<tr><td colspan="7" class="muted">No jobs in this batch.</td></tr>'
     retry_action = _batch_retry_action(project=project, batch=batch)
+    report_links = _batch_report_links(project=project, batch=batch)
     return _page(
         title=f"Aphrodite Batch {batch.id}",
         body=f"""
         <header>
           <h1>Import Batch</h1>
-          <nav><a href="/admin/projects/{_u(project.id)}">Project dashboard</a><a href="/admin/import?project_id={_u(project.id)}">Import CSV</a><a href="/admin/jobs?project_id={_u(project.id)}">Job list</a></nav>
+          <nav><a href="/admin/projects/{_u(project.id)}">Project dashboard</a><a href="/admin/import?project_id={_u(project.id)}">Import CSV</a><a href="/admin/jobs?project_id={_u(project.id)}">Job list</a>{report_links}</nav>
         </header>
         {message_banner}
         <section class="summary">
@@ -238,16 +370,23 @@ def render_admin_project_batch_detail(
             <div><dt>Project</dt><dd><a href="/admin/projects/{_u(project.id)}">{_h(project.name)}</a></dd></div>
             <div><dt>Batch ID</dt><dd>{_h(batch.id)}</dd></div>
             <div><dt>Source</dt><dd>{_h(_batch_source_label(batch.source))}</dd></div>
-            <div><dt>Jobs</dt><dd>{batch.created}</dd></div>
-            <div><dt>Created</dt><dd>{_h(batch.created_at)}</dd></div>
-            <div><dt>xAI spend</dt><dd>${_project_spend_usd(jobs=batch.jobs, spend=spend):.4f}</dd></div>
+            <div><dt>Jobs</dt><dd>{report.job_count}</dd></div>
+            <div><dt>Created</dt><dd>{_h(report.created_at)}</dd></div>
+            <div><dt>First render</dt><dd>{_h(report.first_render_at or "-")}</dd></div>
+            <div><dt>Last update</dt><dd>{_h(report.last_updated_at or "-")}</dd></div>
+            <div><dt>Completed</dt><dd>{_h(report.completed_at or "-")}</dd></div>
+            <div><dt>xAI spend</dt><dd>${report.xai_cost_usd:.4f}</dd></div>
           </dl>
         </section>
         <section class="metrics metrics-wide">
-          <div><span>Queued</span><strong>{counts[JobStatus.QUEUED]}</strong></div>
-          <div><span>Rendering</span><strong>{counts[JobStatus.RENDERING]}</strong></div>
-          <div><span>Completed</span><strong>{counts[JobStatus.COMPLETED]}</strong></div>
-          <div><span>Failed</span><strong>{counts[JobStatus.FAILED]}</strong></div>
+          <div><span>Queued</span><strong>{report.status_counts.queued}</strong></div>
+          <div><span>Rendering</span><strong>{report.status_counts.rendering}</strong></div>
+          <div><span>Completed</span><strong>{report.status_counts.completed}</strong></div>
+          <div><span>Failed</span><strong>{report.status_counts.failed}</strong></div>
+          <div><span>Outputs</span><strong>{report.output_count} / {report.planned_output_count}</strong></div>
+          <div><span>Approved</span><strong>{report.approved_output_count}</strong></div>
+          <div><span>Approval</span><strong>{_format_percent(report.approval_rate)}</strong></div>
+          <div><span>Spend</span><strong>${report.xai_cost_usd:.4f}</strong></div>
         </section>
         <section>
           <h2>Retry</h2>
@@ -799,16 +938,19 @@ def _project_batch_history(
     project: ProjectRecord,
     batches: list[ProjectJobBatchRecord],
     jobs: list[JobRecord],
+    spend: XAISpendSummary,
 ) -> str:
     project_retry = _project_retry_action(project=project, jobs=jobs)
     if not batches:
         return project_retry + '<p class="muted">No saved imports yet.</p>'
 
-    rows = "\n".join(_project_batch_row(project=project, batch=batch) for batch in batches)
+    rows = "\n".join(
+        _project_batch_row(project=project, batch=batch, spend=spend) for batch in batches
+    )
     return f"""
     {project_retry}
     <table>
-      <thead><tr><th>Batch</th><th>Source</th><th>Jobs</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Batch</th><th>Source</th><th>Jobs</th><th>Outputs</th><th>Approval</th><th>Spend</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     """
@@ -829,18 +971,34 @@ def _project_retry_action(*, project: ProjectRecord, jobs: list[JobRecord]) -> s
     """
 
 
-def _project_batch_row(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:
+def _project_batch_row(
+    *,
+    project: ProjectRecord,
+    batch: ProjectJobBatchRecord,
+    spend: XAISpendSummary,
+) -> str:
+    report = project_job_batch_report(batch=batch, spend=spend)
     counts = _job_status_counts(batch.jobs)
     return f"""
     <tr>
       <td><a href="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}">{_h(batch.id[:8])}</a><small>{_h(batch.id)}</small></td>
       <td>{_h(_batch_source_label(batch.source))}</td>
-      <td>{batch.created}</td>
+      <td>{report.job_count}</td>
+      <td>{report.output_count} / {report.planned_output_count}</td>
+      <td>{_format_percent(report.approval_rate)}</td>
+      <td>${report.xai_cost_usd:.4f}</td>
       <td>{_format_status_counts(counts)}</td>
-      <td>{_h(batch.created_at)}</td>
+      <td>{_h(report.last_updated_at or batch.created_at)}</td>
       <td>{_batch_retry_action(project=project, batch=batch)}</td>
     </tr>
     """
+
+
+def _batch_report_links(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:
+    return (
+        f'<a href="/v1/projects/{_u(project.id)}/jobs/batches/{_u(batch.id)}/report.json">Report JSON</a>'
+        f'<a href="/v1/projects/{_u(project.id)}/jobs/batches/{_u(batch.id)}/report.csv">Report CSV</a>'
+    )
 
 
 def _batch_retry_action(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:
@@ -878,6 +1036,10 @@ def _format_status_counts(counts: dict[JobStatus, int]) -> str:
 
 def _batch_source_label(source: str) -> str:
     return source.replace("_", " ")
+
+
+def _format_percent(value: float) -> str:
+    return f"{value * 100:.0f}%"
 
 
 def _batch_job_row(job: JobRecord) -> str:

@@ -236,6 +236,42 @@ class ProjectJobBatchRecord(BaseModel):
     created_at: str
 
 
+class ProjectJobBatchStatusCounts(BaseModel):
+    queued: int = 0
+    planning: int = 0
+    rendering: int = 0
+    completed: int = 0
+    failed: int = 0
+    canceled: int = 0
+
+
+class ProjectJobBatchReviewCounts(BaseModel):
+    pending_review: int = 0
+    approved: int = 0
+    rejected: int = 0
+
+
+class ProjectJobBatchReport(BaseModel):
+    batch_id: str
+    project_id: str
+    source: str
+    created_at: str
+    first_render_at: str | None = None
+    last_updated_at: str | None = None
+    completed_at: str | None = None
+    job_count: int
+    planned_output_count: int
+    output_count: int
+    pending_review_output_count: int
+    approved_output_count: int
+    rejected_output_count: int
+    approval_rate: float
+    xai_cost_usd: float
+    xai_cost_in_usd_ticks: int
+    status_counts: ProjectJobBatchStatusCounts
+    review_counts: ProjectJobBatchReviewCounts
+
+
 class JobStatusUpdate(BaseModel):
     status: JobStatus
     error: str | None = Field(default=None, max_length=2000)

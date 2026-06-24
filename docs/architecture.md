@@ -52,8 +52,10 @@ project catalog request into normal queued jobs in one transaction, so renderers
 same claim and output contract. CSV imports are parsed into the same batch request shape,
 which keeps spreadsheet intake out of worker and renderer code. Batch records are saved
 with a source label and linked job IDs so project dashboards can show import history and
-batch detail pages. Retry controls only requeue failed jobs, clearing failure and claim
-metadata without touching completed or approved outputs.
+batch detail pages. Batch reports derive spend, throughput, approval rate, timestamps,
+and CSV/JSON status exports from those linked jobs plus the xAI cost ledger. Retry
+controls only requeue failed jobs, clearing failure and claim metadata without touching
+completed or approved outputs.
 
 Completed outputs start in `pending_review`. Admin review actions can approve or reject
 each variant with an optional note from job or project views. Project views can also

@@ -505,10 +505,33 @@ def test_admin_project_import_history_and_retry_controls(
         files={"file": ("catalog.csv", csv_content, "text/csv")},
     )
     jobs = test_client.get("/v1/jobs", params={"project_id": project_payload["id"]}).json()
-    jobs_by_name = {job["product"]["name"]: job for job in jobs}
-    batch_id = jobs_by_name["History tote"]["batch_id"]
-    failed_job_id = jobs_by_name["History tote"]["id"]
-    other_job_id = jobs_by_name["History mug"]["id"]
+    batch_id = jobs[0]["batch_id"]
+    claim = test_client.post(
+        "/v1/worker/jobs/claim",
+        json={"worker_id": "history-report-renderer"},
+    ).json()
+    completed_job_id = claim["job"]["id"]
+    failed_job_id = next(job["id"] for job in jobs if job["id"] != completed_job_id)
+
+    output_path = f"outputs/{completed_job_id}/catalog_square.png"
+    absolute_output = tmp_path / "media" / output_path
+    absolute_output.parent.mkdir(parents=True, exist_ok=True)
+    absolute_output.write_bytes(PNG_1X1)
+    complete = test_client.post(
+        f"/v1/worker/jobs/{completed_job_id}/outputs",
+        json={
+            "claim_token": claim["claim_token"],
+            "variant_id": "catalog_square",
+            "storage_path": output_path,
+            "content_type": "image/png",
+            "bytes": len(PNG_1X1),
+            "sha256": hashlib.sha256(PNG_1X1).hexdigest(),
+            "width": 1,
+            "height": 1,
+        },
+    )
+    approve = test_client.post(f"/admin/jobs/{completed_job_id}/outputs/catalog_square/approve")
+    write_spend(tmp_path, job_id=completed_job_id)
 
     fail = test_client.patch(
         f"/v1/jobs/{failed_job_id}/status",
@@ -516,30 +539,54 @@ def test_admin_project_import_history_and_retry_controls(
     )
     dashboard = test_client.get(f"/admin/projects/{project_payload['id']}")
     detail = test_client.get(f"/admin/projects/{project_payload['id']}/batches/{batch_id}")
+    report = test_client.get(
+        f"/v1/projects/{project_payload['id']}/jobs/batches/{batch_id}/report.json"
+    )
+    csv_report = test_client.get(
+        f"/v1/projects/{project_payload['id']}/jobs/batches/{batch_id}/report.csv"
+    )
     retry_batch = test_client.post(
         f"/admin/projects/{project_payload['id']}/batches/{batch_id}/retry-failed"
     )
     requeued = test_client.get(f"/v1/jobs/{failed_job_id}").json()
 
     second_fail = test_client.patch(
-        f"/v1/jobs/{other_job_id}/status",
+        f"/v1/jobs/{completed_job_id}/status",
         json={"status": "failed", "error": "second crash"},
     )
     retry_project = test_client.post(
         f"/admin/projects/{project_payload['id']}/jobs/retry-failed"
     )
-    second_requeued = test_client.get(f"/v1/jobs/{other_job_id}").json()
+    second_requeued = test_client.get(f"/v1/jobs/{completed_job_id}").json()
 
     assert import_response.status_code == 200
+    assert complete.status_code == 200
+    assert approve.status_code == 200
     assert fail.status_code == 200
     assert dashboard.status_code == 200
     assert "Import History" in dashboard.text
     assert "admin csv" in dashboard.text
+    assert "1 / 2" in dashboard.text
+    assert "100%" in dashboard.text
+    assert "$0.0600" in dashboard.text
     assert "Retry failed project jobs" in dashboard.text
     assert "Retry 1 failed job" in dashboard.text
     assert detail.status_code == 200
     assert "Import Batch" in detail.text
     assert "renderer crashed" in detail.text
+    assert "Report JSON" in detail.text
+    assert "Report CSV" in detail.text
+    assert "$0.0600" in detail.text
+    assert "100%" in detail.text
+    assert report.status_code == 200
+    assert report.json()["output_count"] == 1
+    assert report.json()["approved_output_count"] == 1
+    assert report.json()["status_counts"]["completed"] == 1
+    assert report.json()["status_counts"]["failed"] == 1
+    assert report.json()["xai_cost_usd"] == 0.06
+    assert csv_report.status_code == 200
+    assert "History" in csv_report.text
+    assert "0.0600" in csv_report.text
     assert retry_batch.status_code == 200
     assert "Requeued 1 failed job." in retry_batch.text
     assert requeued["status"] == "queued"
