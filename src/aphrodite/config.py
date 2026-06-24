@@ -48,6 +48,8 @@ class Settings:
     alert_webhook_url: str | None = None
     alert_webhook_token: str | None = None
     alert_timeout_seconds: float = 10.0
+    alert_retry_base_seconds: int = 300
+    alert_retry_max_seconds: int = 3600
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -66,5 +68,13 @@ class Settings:
             alert_timeout_seconds=_env_float(
                 "APHRODITE_ALERT_TIMEOUT_SECONDS",
                 cls.alert_timeout_seconds,
+            ),
+            alert_retry_base_seconds=_env_int(
+                "APHRODITE_ALERT_RETRY_BASE_SECONDS",
+                cls.alert_retry_base_seconds,
+            ),
+            alert_retry_max_seconds=_env_int(
+                "APHRODITE_ALERT_RETRY_MAX_SECONDS",
+                cls.alert_retry_max_seconds,
             ),
         )

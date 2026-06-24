@@ -159,6 +159,8 @@ CREATE TABLE IF NOT EXISTS project_job_batch_alerts (
   delivered_at TEXT,
   delivery_attempted_at TEXT,
   delivery_error TEXT,
+  delivery_attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_delivery_attempt_at TEXT,
   acknowledged_at TEXT,
   acknowledged_by TEXT,
   muted_until TEXT,
@@ -1041,6 +1043,14 @@ class JobStore:
                         WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
                         ELSE project_job_batch_alerts.delivery_error
                       END,
+                      delivery_attempt_count = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN 0
+                        ELSE project_job_batch_alerts.delivery_attempt_count
+                      END,
+                      next_delivery_attempt_at = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.next_delivery_attempt_at
+                      END,
                       acknowledged_at = CASE
                         WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
                         ELSE project_job_batch_alerts.acknowledged_at
@@ -1103,17 +1113,45 @@ class JobStore:
         project_id: str,
         batch_id: str,
         include_resolved: bool = False,
+        resolved_only: bool = False,
     ) -> list[ProjectJobBatchAlertRecord]:
-        resolved_filter = "" if include_resolved else "AND resolved_at IS NULL"
+        if resolved_only:
+            resolved_filter = "AND resolved_at IS NOT NULL"
+        elif include_resolved:
+            resolved_filter = ""
+        else:
+            resolved_filter = "AND resolved_at IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT *
                   FROM project_job_batch_alerts
                  WHERE project_id = ? AND batch_id = ? {resolved_filter}
-                 ORDER BY CASE level WHEN 'critical' THEN 0 ELSE 1 END, created_at ASC
+                 ORDER BY resolved_at IS NOT NULL,
+                          CASE level WHEN 'critical' THEN 0 ELSE 1 END,
+                          created_at ASC
                 """,
                 (project_id, batch_id),
+            ).fetchall()
+        return [self._row_to_project_job_batch_alert(row) for row in rows]
+
+    def list_active_project_job_batch_alerts(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[ProjectJobBatchAlertRecord]:
+        bounded_limit = max(1, min(limit, 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                  FROM project_job_batch_alerts
+                 WHERE resolved_at IS NULL
+                 ORDER BY CASE level WHEN 'critical' THEN 0 ELSE 1 END,
+                          last_seen_at DESC
+                 LIMIT ?
+                """,
+                (bounded_limit,),
             ).fetchall()
         return [self._row_to_project_job_batch_alert(row) for row in rows]
 
@@ -1174,6 +1212,32 @@ class JobStore:
             alert_id=alert_id,
         )
 
+    def clear_project_job_batch_alert_mute(
+        self,
+        *,
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+    ) -> ProjectJobBatchAlertRecord | None:
+        now = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE project_job_batch_alerts
+                   SET muted_until = NULL,
+                       updated_at = ?
+                 WHERE id = ? AND project_id = ? AND batch_id = ?
+                """,
+                (now, alert_id, project_id, batch_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_project_job_batch_alert(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+        )
+
     def get_project_job_batch_alert(
         self,
         *,
@@ -1198,6 +1262,7 @@ class JobStore:
         alert_id: str,
         delivered: bool,
         error: str | None,
+        next_delivery_attempt_at: str | None = None,
     ) -> ProjectJobBatchAlertRecord | None:
         now = _utc_now()
         with self._connect() as conn:
@@ -1207,10 +1272,19 @@ class JobStore:
                    SET delivery_attempted_at = ?,
                        delivered_at = ?,
                        delivery_error = ?,
+                       delivery_attempt_count = delivery_attempt_count + 1,
+                       next_delivery_attempt_at = ?,
                        updated_at = ?
                  WHERE id = ?
                 """,
-                (now, now if delivered else None, error, now, alert_id),
+                (
+                    now,
+                    now if delivered else None,
+                    error,
+                    next_delivery_attempt_at,
+                    now,
+                    alert_id,
+                ),
             )
             if cursor.rowcount == 0:
                 return None
@@ -1219,7 +1293,6 @@ class JobStore:
                 (alert_id,),
             ).fetchone()
         return self._row_to_project_job_batch_alert(row) if row is not None else None
-
 
     def retry_failed_jobs(
         self,
@@ -1317,8 +1390,15 @@ class JobStore:
             row["name"]
             for row in conn.execute("PRAGMA table_info(project_job_batch_alerts)").fetchall()
         }
-        if "resolved_at" not in alert_columns:
-            conn.execute("ALTER TABLE project_job_batch_alerts ADD COLUMN resolved_at TEXT")
+        for column, definition in {
+            "delivery_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "next_delivery_attempt_at": "TEXT",
+            "resolved_at": "TEXT",
+        }.items():
+            if column not in alert_columns:
+                conn.execute(
+                    f"ALTER TABLE project_job_batch_alerts ADD COLUMN {column} {definition}"
+                )
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_project_job_batch_alerts_batch
@@ -1340,6 +1420,8 @@ class JobStore:
             delivered_at=row["delivered_at"],
             delivery_attempted_at=row["delivery_attempted_at"],
             delivery_error=row["delivery_error"],
+            delivery_attempt_count=row["delivery_attempt_count"],
+            next_delivery_attempt_at=row["next_delivery_attempt_at"],
             acknowledged_at=row["acknowledged_at"],
             acknowledged_by=row["acknowledged_by"],
             muted_until=row["muted_until"],

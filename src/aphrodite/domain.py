@@ -287,6 +287,8 @@ class ProjectJobBatchAlertRecord(ProjectJobBatchAlert):
     delivered_at: str | None = None
     delivery_attempted_at: str | None = None
     delivery_error: str | None = None
+    delivery_attempt_count: int = 0
+    next_delivery_attempt_at: str | None = None
     acknowledged_at: str | None = None
     acknowledged_by: str | None = None
     muted_until: str | None = None

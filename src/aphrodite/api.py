@@ -33,7 +33,10 @@ from aphrodite.admin import (
     render_admin_project_batch_detail,
     render_admin_project_detail,
 )
-from aphrodite.alerts import process_project_job_batch_alerts
+from aphrodite.alerts import (
+    process_project_job_batch_alerts,
+    retry_project_job_batch_alert_delivery,
+)
 from aphrodite.assets import (
     AssetStorageError,
     AssetValidationError,
@@ -233,15 +236,19 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         *,
         project_id: str,
         batch_id: str,
+        alert_view: str = "active",
         message: str | None = None,
         status_code: int = status.HTTP_200_OK,
     ) -> HTMLResponse:
         project = project_or_404(project_id)
         batch = project_batch_or_404(project_id, batch_id)
         spend = _xai_spend_summary(settings.media_root)
+        alert_view = _normalized_alert_view(alert_view)
         alert_records = store.list_project_job_batch_alerts(
             project_id=project_id,
             batch_id=batch_id,
+            include_resolved=alert_view == "all",
+            resolved_only=alert_view == "resolved",
         )
         return HTMLResponse(
             render_admin_project_batch_detail(
@@ -249,6 +256,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 batch=batch,
                 spend=spend,
                 alert_records=alert_records,
+                alert_view=alert_view,
                 message=message,
             ),
             status_code=status_code,
@@ -465,8 +473,16 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         response_class=HTMLResponse,
         dependencies=[Depends(require_api_auth)],
     )
-    def admin_project_batch_detail(project_id: str, batch_id: str) -> HTMLResponse:
-        return admin_project_batch_page(project_id=project_id, batch_id=batch_id)
+    def admin_project_batch_detail(
+        project_id: str,
+        batch_id: str,
+        alerts: str = "active",
+    ) -> HTMLResponse:
+        return admin_project_batch_page(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_view=alerts,
+        )
 
     @app.post(
         "/admin/projects/{project_id}/batches/{batch_id}/alerts/{alert_id}/acknowledge",
@@ -517,6 +533,67 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             project_id=project_id,
             batch_id=batch_id,
             message="Muted alert.",
+        )
+
+    @app.post(
+        "/admin/projects/{project_id}/batches/{batch_id}/alerts/{alert_id}/clear-mute",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_clear_batch_alert_mute(
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+    ) -> HTMLResponse:
+        project_batch_or_404(project_id, batch_id)
+        record = store.clear_project_job_batch_alert_mute(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="alert not found")
+        return admin_project_batch_page(
+            project_id=project_id,
+            batch_id=batch_id,
+            message="Cleared alert mute.",
+        )
+
+    @app.post(
+        "/admin/projects/{project_id}/batches/{batch_id}/alerts/{alert_id}/retry-delivery",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_retry_batch_alert_delivery(
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+    ) -> HTMLResponse:
+        project_batch_or_404(project_id, batch_id)
+        if not settings.alert_webhook_url:
+            return admin_project_batch_page(
+                project_id=project_id,
+                batch_id=batch_id,
+                message="Alert webhook is not configured.",
+            )
+        record = retry_project_job_batch_alert_delivery(
+            store=store,
+            settings=settings,
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="alert not found")
+        message = "Retried alert delivery."
+        if record.delivery_error:
+            message = f"Alert delivery failed: {record.delivery_error}"
+        elif not record.delivered_at:
+            message = "Alert was not eligible for delivery."
+        return admin_project_batch_page(
+            project_id=project_id,
+            batch_id=batch_id,
+            message=message,
         )
 
     @app.post(
@@ -1188,6 +1265,10 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         return job
 
     return app
+
+
+def _normalized_alert_view(value: str) -> str:
+    return value if value in {"active", "resolved", "all"} else "active"
 
 
 def _xai_spend_summary(media_root: str) -> XAISpendSummary:

@@ -57,8 +57,12 @@ which keeps spreadsheet intake out of worker and renderer code. Batch records ar
 with a source label and linked job IDs so project dashboards can show import history and
 batch detail pages. Batch reports derive spend, throughput, approval rate, timestamps,
 failure category counts, persisted alerts, and CSV/JSON status exports from those linked jobs
-plus the xAI cost ledger. Failure transitions reconcile alert records and deliver new critical
-alerts once to the configured webhook; report views remain read-only. Retry controls only requeue failed jobs, clearing failure and claim
+plus the xAI cost ledger. Failure transitions reconcile alert records and deliver critical alerts to the configured
+webhook. Failed webhook deliveries keep their last error, attempt count, and next retry
+time so later reconciliations or manual admin retries can deliver without duplicating
+successful notifications. `aphrodite-alerts digest` is designed for cron or systemd
+timers that need a compact active-alert summary. Retry controls only requeue failed jobs,
+clearing failure and claim
 metadata without touching completed or approved outputs.
 
 Completed outputs start in `pending_review`. Admin review actions can approve or reject

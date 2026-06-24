@@ -204,6 +204,8 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_ALERT_WEBHOOK_URL` | unset | Optional webhook for outbound critical batch alerts. |
 | `APHRODITE_ALERT_WEBHOOK_TOKEN` | unset | Optional bearer token for the alert webhook. |
 | `APHRODITE_ALERT_TIMEOUT_SECONDS` | `10` | Alert webhook request timeout. |
+| `APHRODITE_ALERT_RETRY_BASE_SECONDS` | `300` | Initial retry delay after a failed alert webhook delivery. |
+| `APHRODITE_ALERT_RETRY_MAX_SECONDS` | `3600` | Maximum alert webhook retry delay. |
 | `APHRODITE_WORKER_API_URL` | `http://127.0.0.1:8020` | API base URL used by `aphrodite-worker`. |
 | `APHRODITE_WORKER_ID` | host-derived | Worker identity used when claiming jobs. |
 | `APHRODITE_WORKER_BACKEND` | `local_stub` | Renderer backend used by the worker CLI (`local_stub` or `xai`). |
@@ -222,6 +224,59 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_WORKER_CLAIM_TTL_SECONDS` | `300` | Claim heartbeat/expiry window. |
 | `APHRODITE_WORKER_ONCE` | `false` | Process at most one claim and exit. |
 
+Run `aphrodite-alerts digest` from cron or systemd timers to send a compact digest
+of active unresolved alerts to the configured webhook. Use `--dry-run` to print the
+payload without delivery.
+
+## Alert webhooks
+
+When `APHRODITE_ALERT_WEBHOOK_URL` is set, Aphrodite sends critical batch alerts as
+JSON `POST` requests. If `APHRODITE_ALERT_WEBHOOK_TOKEN` is set, the request includes
+`Authorization: Bearer <token>`.
+
+Payload shape:
+
+```json
+{
+  "kind": "batch_alert",
+  "service": "aphrodite",
+  "environment": "production",
+  "project": {"id": "project-id", "name": "Catalog", "client_id": "client-id"},
+  "batch": {"id": "batch-id", "source": "csv_import", "created": 2, "created_at": "2026-06-24T00:00:00Z"},
+  "alert": {
+    "id": "alert-id",
+    "level": "critical",
+    "code": "budget_exceeded_failures",
+    "message": "1 job failed because xAI budget limits were reached.",
+    "count": 1,
+    "delivery_attempt_count": 0
+  }
+}
+```
+
+Failed deliveries are stored with the last error, attempt count, and next retry time.
+Operators can retry delivery, acknowledge, mute, clear mute, and review active or
+resolved alerts from the batch detail page.
+
+Local webhook dogfood:
+
+```bash
+python3 -c 'from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        print(self.rfile.read(int(self.headers.get("content-length", "0"))).decode())
+        self.send_response(204)
+        self.end_headers()
+HTTPServer(("127.0.0.1", 9099), H).serve_forever()'
+
+APHRODITE_ALERT_WEBHOOK_URL=http://127.0.0.1:9099 \
+  APHRODITE_ALERT_RETRY_BASE_SECONDS=30 \
+  aphrodite-api
+```
+
+Digest payloads use `"kind": "alert_digest"` and include `generated_at`,
+`alert_count`, and an `alerts` list of active unresolved alert records.
+
 ## Next build targets
 
-- Add scheduled alert digest and historical alert filtering.
+- Add alert escalation channels and notification routing.

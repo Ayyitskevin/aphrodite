@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -54,8 +55,6 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
             "safe_margin_percent": 8,
         }
     ]
-
-    import sqlite3
 
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -121,8 +120,6 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
 
 def test_store_migrates_output_review_columns(tmp_path: Path) -> None:
     db_path = tmp_path / "aphrodite.db"
-    import sqlite3
-
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -151,6 +148,47 @@ def test_store_migrates_output_review_columns(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(job_outputs)").fetchall()}
     assert {"review_status", "review_note", "reviewed_at"}.issubset(columns)
+
+
+def test_store_migrates_prior_alert_table_retry_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "aphrodite.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE project_job_batch_alerts (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL,
+              batch_id TEXT NOT NULL,
+              level TEXT NOT NULL,
+              code TEXT NOT NULL,
+              message TEXT NOT NULL,
+              count INTEGER NOT NULL,
+              last_seen_at TEXT NOT NULL,
+              delivered_at TEXT,
+              delivery_attempted_at TEXT,
+              delivery_error TEXT,
+              acknowledged_at TEXT,
+              acknowledged_by TEXT,
+              muted_until TEXT,
+              resolved_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(batch_id, code)
+            )
+            """
+        )
+
+    store = JobStore(str(db_path))
+    store.initialize()
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]: row
+            for row in conn.execute("PRAGMA table_info(project_job_batch_alerts)").fetchall()
+        }
+    assert "delivery_attempt_count" in columns
+    assert "next_delivery_attempt_at" in columns
+    assert columns["delivery_attempt_count"][4] == "0"
 
 
 def test_store_creates_clients_projects_and_filters_owned_jobs(tmp_path: Path) -> None:

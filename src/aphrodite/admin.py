@@ -161,6 +161,7 @@ def render_admin_project_batch_detail(
     batch: ProjectJobBatchRecord,
     spend: XAISpendSummary,
     alert_records: list[ProjectJobBatchAlertRecord] | None = None,
+    alert_view: str = "active",
     message: str | None = None,
 ) -> str:
     message_banner = ""
@@ -170,7 +171,14 @@ def render_admin_project_batch_detail(
     job_rows = "\n".join(_batch_job_row(job) for job in batch.jobs)
     if not job_rows:
         job_rows = '<tr><td colspan="8" class="muted">No jobs in this batch.</td></tr>'
-    alert_panel = _batch_alert_panel(project=project, batch=batch, report=report, alert_records=alert_records or [])
+    alert_panel = _batch_alert_panel(
+        project=project,
+        batch=batch,
+        report=report,
+        alert_records=alert_records or [],
+        alert_view=alert_view,
+    )
+    alert_tabs = _batch_alert_tabs(project=project, batch=batch, active=alert_view)
     retry_action = _batch_retry_action(project=project, batch=batch)
     report_links = _batch_report_links(project=project, batch=batch)
     return _page(
@@ -207,6 +215,7 @@ def render_admin_project_batch_detail(
         </section>
         <section>
           <h2>Alerts</h2>
+          {alert_tabs}
           {alert_panel}
         </section>
         <section>
@@ -784,18 +793,42 @@ def _batch_alert_summary(report) -> str:
     return " ".join(parts)
 
 
+def _batch_alert_tabs(
+    *,
+    project: ProjectRecord,
+    batch: ProjectJobBatchRecord,
+    active: str,
+) -> str:
+    links = []
+    for value, label in [
+        ("active", "Active"),
+        ("resolved", "Resolved"),
+        ("all", "All"),
+    ]:
+        class_name = "button" if value == active else ""
+        links.append(
+            f'<a class="{class_name}" href="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}?alerts={_u(value)}">{_h(label)}</a>'
+        )
+    return f'<div class="actions-inline">{"".join(links)}</div>'
+
+
 def _batch_alert_panel(
     *,
     project: ProjectRecord,
     batch: ProjectJobBatchRecord,
     report,
     alert_records: list[ProjectJobBatchAlertRecord],
+    alert_view: str,
 ) -> str:
     if alert_records:
         return "\n".join(
             _batch_alert_record_panel(project=project, batch=batch, alert=alert)
             for alert in alert_records
         )
+    if alert_view == "resolved":
+        return '<p class="muted">No resolved batch alerts.</p>'
+    if alert_view == "all":
+        return '<p class="muted">No saved batch alerts.</p>'
     if not report.alerts:
         return '<p class="muted">No batch alerts.</p>'
     return "\n".join(
@@ -820,17 +853,52 @@ def _batch_alert_record_panel(
       <strong>{_h(alert.code.replace("_", " "))}</strong>
       <small>{_h(alert.message)}</small>
       {_batch_alert_record_status(alert)}
-      <div class="actions-row">
+      {_batch_alert_record_actions(project=project, batch=batch, alert=alert)}
+    </div>
+    """
+
+
+def _batch_alert_record_actions(
+    *,
+    project: ProjectRecord,
+    batch: ProjectJobBatchRecord,
+    alert: ProjectJobBatchAlertRecord,
+) -> str:
+    if alert.resolved_at or alert.acknowledged_at:
+        return ""
+    actions = [
+        f"""
         <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/acknowledge">
           <button type="submit">Acknowledge</button>
         </form>
-        <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/mute">
-          <input type="number" name="hours" min="1" max="720" value="24" aria-label="Mute hours">
-          <button type="submit">Mute</button>
-        </form>
-      </div>
-    </div>
-    """
+        """
+    ]
+    if alert.muted_until:
+        actions.append(
+            f"""
+            <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/clear-mute">
+              <button type="submit">Clear mute</button>
+            </form>
+            """
+        )
+    else:
+        actions.append(
+            f"""
+            <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/mute">
+              <input type="number" name="hours" min="1" max="720" value="24" aria-label="Mute hours">
+              <button type="submit">Mute</button>
+            </form>
+            """
+        )
+    if alert.level == "critical" and not alert.delivered_at:
+        actions.append(
+            f"""
+            <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/retry-delivery">
+              <button type="submit">Retry delivery</button>
+            </form>
+            """
+        )
+    return f'<div class="actions-row">{"".join(actions)}</div>'
 
 
 def _batch_alert_record_status(alert: ProjectJobBatchAlertRecord) -> str:
@@ -849,6 +917,10 @@ def _batch_alert_record_status(alert: ProjectJobBatchAlertRecord) -> str:
         states.append(f"Delivery attempted at {alert.delivery_attempted_at}")
     else:
         states.append("Not delivered")
+    if alert.delivery_attempt_count:
+        states.append(f"Delivery attempts: {alert.delivery_attempt_count}")
+    if alert.next_delivery_attempt_at:
+        states.append(f"Next retry: {alert.next_delivery_attempt_at}")
     return f'<small>{" | ".join(_h(state) for state in states)}</small>'
 
 
