@@ -14,6 +14,7 @@ from urllib import error, request
 from pydantic import ValidationError
 
 from aphrodite.domain import JobRecord, OutputVariant, WorkerJobClaim
+from aphrodite.failures import classify_failure
 from aphrodite.renderers import RendererBackend, RendererError, get_renderer_backend
 
 
@@ -79,7 +80,14 @@ class WorkerApi(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def fail_job(self, *, job_id: str, claim_token: str, error_message: str) -> JobRecord:
+    def fail_job(
+        self,
+        *,
+        job_id: str,
+        claim_token: str,
+        error_message: str,
+        failure_category: str | None = None,
+    ) -> JobRecord:
         ...
 
 
@@ -139,11 +147,18 @@ class HttpWorkerApiClient:
             raise WorkerApiError("output response did not match worker contract")
         return payload
 
-    def fail_job(self, *, job_id: str, claim_token: str, error_message: str) -> JobRecord:
-        payload = self._post_json(
-            f"/v1/worker/jobs/{job_id}/fail",
-            {"claim_token": claim_token, "error": error_message},
-        )
+    def fail_job(
+        self,
+        *,
+        job_id: str,
+        claim_token: str,
+        error_message: str,
+        failure_category: str | None = None,
+    ) -> JobRecord:
+        body = {"claim_token": claim_token, "error": error_message}
+        if failure_category is not None:
+            body["failure_category"] = failure_category
+        payload = self._post_json(f"/v1/worker/jobs/{job_id}/fail", body)
         try:
             return JobRecord.model_validate(payload)
         except ValidationError as exc:
@@ -208,11 +223,13 @@ def process_next_job(
         return True
     except Exception as exc:
         error_message = f"{type(exc).__name__}: {exc}"
+        failure_category = classify_failure(error_message).value
         try:
             client.fail_job(
                 job_id=job.id,
                 claim_token=claim.claim_token,
                 error_message=error_message,
+                failure_category=failure_category,
             )
         except Exception as fail_exc:
             raise WorkerApiError(

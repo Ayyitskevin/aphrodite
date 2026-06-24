@@ -108,3 +108,26 @@ def test_worker_routes_reject_wrong_claim_token(tmp_path: Path) -> None:
     assert heartbeat.status_code == 409
     assert output.status_code == 409
     assert fail.status_code == 409
+
+
+
+def test_worker_fail_route_accepts_failure_category(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+    job_id = create_job(test_client)
+    claim = test_client.post(
+        "/v1/worker/jobs/claim",
+        json={"worker_id": "renderer-a"},
+    ).json()
+
+    response = test_client.post(
+        f"/v1/worker/jobs/{job_id}/fail",
+        json={
+            "claim_token": claim["claim_token"],
+            "error": "xAI image request timed out",
+            "failure_category": "timeout",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["failure_category"] == "timeout"

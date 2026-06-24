@@ -31,6 +31,16 @@ class JobStatus(StrEnum):
     CANCELED = "canceled"
 
 
+class JobFailureCategory(StrEnum):
+    SOURCE_ASSET_ERROR = "source_asset_error"
+    PROVIDER_ERROR = "provider_error"
+    TIMEOUT = "timeout"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    RENDERER_ERROR = "renderer_error"
+    WORKER_ERROR = "worker_error"
+    UNKNOWN = "unknown"
+
+
 class OutputStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
@@ -223,6 +233,7 @@ class JobRecord(BaseModel):
     claimed_at: str | None = None
     claim_expires_at: str | None = None
     error: str | None = None
+    failure_category: JobFailureCategory | None = None
     created_at: str
     updated_at: str
 
@@ -251,6 +262,23 @@ class ProjectJobBatchReviewCounts(BaseModel):
     rejected: int = 0
 
 
+class ProjectJobBatchFailureCounts(BaseModel):
+    source_asset_error: int = 0
+    provider_error: int = 0
+    timeout: int = 0
+    budget_exceeded: int = 0
+    renderer_error: int = 0
+    worker_error: int = 0
+    unknown: int = 0
+
+
+class ProjectJobBatchAlert(BaseModel):
+    level: Literal["warning", "critical"]
+    code: str
+    message: str
+    count: int = 0
+
+
 class ProjectJobBatchReport(BaseModel):
     batch_id: str
     project_id: str
@@ -270,11 +298,14 @@ class ProjectJobBatchReport(BaseModel):
     xai_cost_in_usd_ticks: int
     status_counts: ProjectJobBatchStatusCounts
     review_counts: ProjectJobBatchReviewCounts
+    failure_counts: ProjectJobBatchFailureCounts
+    alerts: list[ProjectJobBatchAlert] = Field(default_factory=list)
 
 
 class JobStatusUpdate(BaseModel):
     status: JobStatus
     error: str | None = Field(default=None, max_length=2000)
+    failure_category: JobFailureCategory | None = None
 
     @model_validator(mode="after")
     def failed_jobs_need_error_message(self) -> JobStatusUpdate:
@@ -321,6 +352,7 @@ class JobFailureRequest(BaseModel):
 
     claim_token: str = Field(min_length=1, max_length=120)
     error: str = Field(min_length=1, max_length=2000)
+    failure_category: JobFailureCategory | None = None
 
 
 def build_output_plan(request: JobCreate) -> list[OutputVariant]:

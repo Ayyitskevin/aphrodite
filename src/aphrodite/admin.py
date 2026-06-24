@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from aphrodite.domain import (
+    JobFailureCategory,
     JobOutputRecord,
     JobRecord,
     JobStatus,
@@ -92,7 +93,7 @@ def render_admin_project_detail(
 
     job_rows = "\n".join(_project_job_row(job) for job in jobs)
     if not job_rows:
-        job_rows = '<tr><td colspan="6" class="muted">No jobs for this project yet.</td></tr>'
+        job_rows = '<tr><td colspan="7" class="muted">No jobs for this project yet.</td></tr>'
 
     message_banner = ""
     if message:
@@ -145,7 +146,7 @@ def render_admin_project_detail(
         <section>
           <h2>Project Jobs</h2>
           <table>
-            <thead><tr><th>Product</th><th>Status</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th></tr></thead>
+            <thead><tr><th>Product</th><th>Status</th><th>Failure</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th></tr></thead>
             <tbody>{job_rows}</tbody>
           </table>
         </section>
@@ -166,7 +167,8 @@ def render_admin_project_batch_detail(
     report = project_job_batch_report(batch=batch, spend=spend)
     job_rows = "\n".join(_batch_job_row(job) for job in batch.jobs)
     if not job_rows:
-        job_rows = '<tr><td colspan="7" class="muted">No jobs in this batch.</td></tr>'
+        job_rows = '<tr><td colspan="8" class="muted">No jobs in this batch.</td></tr>'
+    alert_panel = _batch_alert_panel(report)
     retry_action = _batch_retry_action(project=project, batch=batch)
     report_links = _batch_report_links(project=project, batch=batch)
     return _page(
@@ -199,6 +201,11 @@ def render_admin_project_batch_detail(
           <div><span>Approved</span><strong>{report.approved_output_count}</strong></div>
           <div><span>Approval</span><strong>{_format_percent(report.approval_rate)}</strong></div>
           <div><span>Spend</span><strong>${report.xai_cost_usd:.4f}</strong></div>
+          <div><span>Alerts</span><strong>{len(report.alerts)}</strong></div>
+        </section>
+        <section>
+          <h2>Alerts</h2>
+          {alert_panel}
         </section>
         <section>
           <h2>Retry</h2>
@@ -207,7 +214,7 @@ def render_admin_project_batch_detail(
         <section>
           <h2>Batch Jobs</h2>
           <table>
-            <thead><tr><th>Product</th><th>Status</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th><th>Error</th></tr></thead>
+            <thead><tr><th>Product</th><th>Status</th><th>Failure</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th><th>Error</th></tr></thead>
             <tbody>{job_rows}</tbody>
           </table>
         </section>
@@ -349,6 +356,7 @@ def render_admin_job_detail(*, job: JobRecord, spend: XAISpendSummary) -> str:
             <div><dt>Project</dt><dd>{_project_detail(job)}</dd></div>
             <div><dt>Worker</dt><dd>{_h(job.claimed_by or "-")}</dd></div>
             <div><dt>Claim expires</dt><dd>{_h(job.claim_expires_at or "-")}</dd></div>
+            <div><dt>Failure</dt><dd>{_failure_category_label(job.failure_category)}</dd></div>
             <div><dt>Updated</dt><dd>{_h(job.updated_at)}</dd></div>
           </dl>
         </section>
@@ -716,7 +724,7 @@ def _project_batch_history(
     return f"""
     {project_retry}
     <table>
-      <thead><tr><th>Batch</th><th>Source</th><th>Jobs</th><th>Outputs</th><th>Approval</th><th>Spend</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Batch</th><th>Source</th><th>Jobs</th><th>Outputs</th><th>Approval</th><th>Spend</th><th>Status</th><th>Alerts</th><th>Updated</th><th>Actions</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
     """
@@ -754,10 +762,34 @@ def _project_batch_row(
       <td>{_format_percent(report.approval_rate)}</td>
       <td>${report.xai_cost_usd:.4f}</td>
       <td>{_format_status_counts(counts)}</td>
+      <td>{_batch_alert_summary(report)}</td>
       <td>{_h(report.last_updated_at or batch.created_at)}</td>
       <td>{_batch_retry_action(project=project, batch=batch)}</td>
     </tr>
     """
+
+
+def _batch_alert_panel(report) -> str:
+    if not report.alerts:
+        return '<p class="muted">No batch alerts.</p>'
+    return "\n".join(
+        f"""
+        <div class="alert alert-{_h(alert.level)}">
+          <strong>{_h(alert.code.replace("_", " "))}</strong>
+          <small>{_h(alert.message)}</small>
+        </div>
+        """
+        for alert in report.alerts
+    )
+
+
+def _batch_alert_summary(report) -> str:
+    if not report.alerts:
+        return '<span class="muted">None</span>'
+    return " ".join(
+        f'<span class="status status-failed">{_h(alert.count)} {_h(alert.level)}</span>'
+        for alert in report.alerts[:2]
+    )
 
 
 def _batch_report_links(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:
@@ -804,6 +836,12 @@ def _batch_source_label(source: str) -> str:
     return source.replace("_", " ")
 
 
+def _failure_category_label(category: JobFailureCategory | None) -> str:
+    if category is None:
+        return "-"
+    return category.value.replace("_", " ").title()
+
+
 def _format_percent(value: float) -> str:
     return f"{value * 100:.0f}%"
 
@@ -813,6 +851,7 @@ def _batch_job_row(job: JobRecord) -> str:
     <tr>
       <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.product.sku or job.id)}</small></td>
       <td><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></td>
+      <td>{_failure_category_label(job.failure_category)}</td>
       <td>{len(job.outputs)} / {len(job.output_plan)}</td>
       <td>{_review_summary(job)}</td>
       <td>{job.priority}</td>
@@ -870,6 +909,7 @@ def _project_job_row(job: JobRecord) -> str:
     <tr>
       <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.id)}</small></td>
       <td><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></td>
+      <td>{_failure_category_label(job.failure_category)}</td>
       <td>{len(job.outputs)} / {len(job.output_plan)}</td>
       <td>{_review_summary(job)}</td>
       <td>{job.priority}</td>
@@ -971,7 +1011,8 @@ def _page(*, title: str, body: str) -> str:
           .filter-link {{ display: inline-block; border: 1px solid var(--line); padding: 5px 9px; }}
           .filter-link.selected {{ background: #eef7f5; color: var(--accent); }}
           .alert {{ background: var(--panel); border: 1px solid var(--line); padding: 12px; }}
-          .alert-error {{ border-color: #f0b4ae; color: var(--bad); background: #fff7f6; }}
+          .alert-error, .alert-critical {{ border-color: #f0b4ae; color: var(--bad); background: #fff7f6; }}
+          .alert-warning {{ border-color: #e6cf8a; color: var(--warn); background: #fffaf0; }}
           .alert-success {{ border-color: #9ed7ca; color: var(--accent); background: #eef7f5; }}
           form {{ display: grid; gap: 12px; margin: 0; }}
           input, select, textarea {{ width: 100%; border: 1px solid var(--line); padding: 8px; font: inherit; background: #fff; color: var(--ink); }}

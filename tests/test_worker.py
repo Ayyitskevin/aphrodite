@@ -63,7 +63,7 @@ class FakeClient:
     def __init__(self, claimed_job: JobRecord | None = None) -> None:
         self.claimed_job = claimed_job
         self.completed: list[dict] = []
-        self.failed: list[str] = []
+        self.failed: list[tuple[str, str | None]] = []
         self.heartbeats = 0
 
     def claim_next_job(self, *, worker_id: str, claim_ttl_seconds: int) -> WorkerJobClaim | None:
@@ -85,8 +85,15 @@ class FakeClient:
         self.completed.append(output_payload)
         return dict(output_payload)
 
-    def fail_job(self, *, job_id: str, claim_token: str, error_message: str) -> JobRecord:
-        self.failed.append(error_message)
+    def fail_job(
+        self,
+        *,
+        job_id: str,
+        claim_token: str,
+        error_message: str,
+        failure_category: str | None = None,
+    ) -> JobRecord:
+        self.failed.append((error_message, failure_category))
         return self.claimed_job
 
 
@@ -171,7 +178,8 @@ def test_process_next_job_fails_claim_when_backend_raises() -> None:
     )
 
     assert client.completed == []
-    assert "RuntimeError: render failed" in client.failed[0]
+    assert "RuntimeError: render failed" in client.failed[0][0]
+    assert client.failed[0][1] == "renderer_error"
 
 
 def test_run_worker_once_exits_after_one_poll() -> None:
@@ -223,7 +231,14 @@ def test_http_worker_client_sends_bearer_token(monkeypatch) -> None:
 
 def test_run_worker_surfaces_fail_update_errors() -> None:
     class BrokenFailClient(FakeClient):
-        def fail_job(self, *, job_id: str, claim_token: str, error_message: str) -> JobRecord:
+        def fail_job(
+            self,
+            *,
+            job_id: str,
+            claim_token: str,
+            error_message: str,
+            failure_category: str | None = None,
+        ) -> JobRecord:
             raise RuntimeError("cannot fail")
 
     with pytest.raises(WorkerApiError):

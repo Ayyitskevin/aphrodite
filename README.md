@@ -12,7 +12,7 @@ persistence, marketplace preset planning, renderer worker contracts, review, and
 - FastAPI service with health and readiness endpoints.
 - SQLite-backed client, project, source asset, product photo job, generated output, review, and export persistence.
 - Upload intake for PNG/JPEG product originals with checksum and dimensions.
-- Worker claim contract for renderers with heartbeats, stale claim recovery, and outputs.
+- Worker claim contract for renderers with heartbeats, stale claim recovery, outputs, and categorized failures.
 - Guarded xAI Grok Imagine renderer backend for real generated product outputs.
 - Domain models for product inputs, source assets, background intent, output variants, and job status.
 - Starter marketplace-style output presets for catalog, social, hero, and transparent
@@ -52,7 +52,8 @@ the job detail page or a project dashboard. Only approved outputs are available 
 the single-output export link, job ZIP export, or project ZIP export. Project dashboards
 also include bulk approve/reject actions for all pending outputs in that project, saved
 import history, retry controls for failed project or batch jobs, and batch-level
-reporting for spend, throughput, approval rate, and status CSV/JSON exports.
+alerts/reporting for spend, throughput, approval rate, categorized failures, and
+status CSV/JSON exports.
 
 Upload a source product image:
 
@@ -220,4 +221,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add renderer failure classification and batch alerting.
+- Add outbound notification delivery for critical batch alerts.

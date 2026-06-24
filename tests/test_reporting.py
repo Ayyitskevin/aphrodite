@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from aphrodite.domain import (
+    JobFailureCategory,
     JobOutputRecord,
     JobRecord,
     JobStatus,
@@ -56,6 +57,7 @@ def test_project_job_batch_report_summarizes_jobs_outputs_and_spend() -> None:
                 sku="SKU-2",
                 updated_at="2026-06-24T02:05:00Z",
                 error="renderer crashed",
+                failure_category=JobFailureCategory.RENDERER_ERROR,
             ),
         ],
         created_at="2026-06-24T02:00:00Z",
@@ -102,10 +104,14 @@ def test_project_job_batch_report_summarizes_jobs_outputs_and_spend() -> None:
     assert report.xai_cost_usd == 0.06
     assert report.status_counts.completed == 1
     assert report.status_counts.failed == 1
+    assert report.failure_counts.renderer_error == 1
+    assert [alert.code for alert in report.alerts] == ["renderer_error_failures"]
     assert "batch_xai_cost_usd" in csv_report
+    assert "failure_category" in csv_report
     assert "job-complete" in csv_report
     assert "SKU-2" in csv_report
     assert "renderer crashed" in csv_report
+    assert "renderer_error" in csv_report
     assert "0.0600" in csv_report
 
 
@@ -158,6 +164,7 @@ def _job(
     sku: str = "SKU-1",
     outputs: list[JobOutputRecord] | None = None,
     error: str | None = None,
+    failure_category: JobFailureCategory | None = None,
 ) -> JobRecord:
     return JobRecord(
         id=job_id,
@@ -186,6 +193,7 @@ def _job(
         outputs=outputs or [],
         priority=5,
         error=error,
+        failure_category=failure_category,
         created_at="2026-06-24T02:00:00Z",
         updated_at=updated_at,
     )

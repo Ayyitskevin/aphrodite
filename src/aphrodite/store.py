@@ -15,6 +15,7 @@ from aphrodite.domain import (
     ClientCreate,
     ClientRecord,
     JobCreate,
+    JobFailureCategory,
     JobOutputCreate,
     JobOutputRecord,
     JobRecord,
@@ -30,6 +31,7 @@ from aphrodite.domain import (
     WorkerJobClaim,
     build_output_plan,
 )
+from aphrodite.failures import classify_failure
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
@@ -107,6 +109,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   claimed_at TEXT,
   claim_expires_at TEXT,
   error TEXT,
+  failure_category TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(source_asset_id) REFERENCES assets(id),
@@ -183,6 +186,19 @@ def _utc_at(value: datetime) -> str:
 
 def _jsonable(model: BaseModel) -> dict:
     return model.model_dump(mode="json")
+
+
+def _failure_category_value(
+    *,
+    error: str | None,
+    failure_category: JobFailureCategory | str | None,
+) -> str:
+    if failure_category is not None:
+        try:
+            return JobFailureCategory(failure_category).value
+        except ValueError:
+            pass
+    return classify_failure(error).value
 
 
 class JobStore:
@@ -687,6 +703,7 @@ class JobStore:
                        claimed_at = ?,
                        claim_expires_at = ?,
                        error = NULL,
+                       failure_category = NULL,
                        updated_at = ?
                  WHERE id = ?
                 """,
@@ -832,6 +849,8 @@ class JobStore:
                            claim_token = NULL,
                            claimed_at = NULL,
                            claim_expires_at = NULL,
+                           error = NULL,
+                           failure_category = NULL,
                            updated_at = ?
                      WHERE id = ?
                     """,
@@ -885,8 +904,10 @@ class JobStore:
         job_id: str,
         claim_token: str,
         error: str,
+        failure_category: JobFailureCategory | str | None = None,
     ) -> JobRecord | None:
         now = _utc_now()
+        category = _failure_category_value(error=error, failure_category=failure_category)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             job_row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -901,10 +922,11 @@ class JobStore:
                        claimed_at = NULL,
                        claim_expires_at = NULL,
                        error = ?,
+                       failure_category = ?,
                        updated_at = ?
                  WHERE id = ?
                 """,
-                (JobStatus.FAILED.value, error, now, job_id),
+                (JobStatus.FAILED.value, error, category, now, job_id),
             )
         return self.get_job(job_id)
 
@@ -914,15 +936,22 @@ class JobStore:
         status: JobStatus,
         *,
         error: str | None = None,
+        failure_category: JobFailureCategory | str | None = None,
     ) -> JobRecord | None:
         now = _utc_now()
         clear_claim = status != JobStatus.RENDERING
+        category = (
+            _failure_category_value(error=error, failure_category=failure_category)
+            if status == JobStatus.FAILED
+            else None
+        )
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 UPDATE jobs
                    SET status = ?,
                        error = ?,
+                       failure_category = ?,
                        updated_at = ?,
                        claimed_by = CASE WHEN ? THEN NULL ELSE claimed_by END,
                        claim_token = CASE WHEN ? THEN NULL ELSE claim_token END,
@@ -933,6 +962,7 @@ class JobStore:
                 (
                     status.value,
                     error,
+                    category,
                     now,
                     clear_claim,
                     clear_claim,
@@ -969,6 +999,7 @@ class JobStore:
                        claimed_at = NULL,
                        claim_expires_at = NULL,
                        error = NULL,
+                       failure_category = NULL,
                        updated_at = ?
                  WHERE {where}
                 """,
@@ -1003,6 +1034,7 @@ class JobStore:
             "claim_expires_at": "TEXT",
             "project_id": "TEXT",
             "batch_id": "TEXT",
+            "failure_category": "TEXT",
         }.items():
             if column not in job_columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
@@ -1131,6 +1163,11 @@ class JobStore:
             claimed_at=row["claimed_at"],
             claim_expires_at=row["claim_expires_at"],
             error=row["error"],
+            failure_category=(
+                JobFailureCategory(row["failure_category"])
+                if row["failure_category"] is not None
+                else None
+            ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

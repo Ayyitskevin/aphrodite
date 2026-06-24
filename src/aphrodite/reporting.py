@@ -11,14 +11,18 @@ from pathlib import Path
 from typing import Any
 
 from aphrodite.domain import (
+    JobFailureCategory,
     JobRecord,
     JobStatus,
     OutputReviewStatus,
+    ProjectJobBatchAlert,
+    ProjectJobBatchFailureCounts,
     ProjectJobBatchRecord,
     ProjectJobBatchReport,
     ProjectJobBatchReviewCounts,
     ProjectJobBatchStatusCounts,
 )
+from aphrodite.failures import classify_failure
 from aphrodite.xai import XAIImageConfig
 
 
@@ -68,6 +72,16 @@ def project_job_batch_report(
     jobs = batch.jobs
     outputs = [output for job in jobs for output in job.outputs]
     status_counts = _job_status_counts(jobs)
+    failure_counts = _job_failure_counts(jobs)
+    failure_summary = ProjectJobBatchFailureCounts(
+        source_asset_error=failure_counts[JobFailureCategory.SOURCE_ASSET_ERROR],
+        provider_error=failure_counts[JobFailureCategory.PROVIDER_ERROR],
+        timeout=failure_counts[JobFailureCategory.TIMEOUT],
+        budget_exceeded=failure_counts[JobFailureCategory.BUDGET_EXCEEDED],
+        renderer_error=failure_counts[JobFailureCategory.RENDERER_ERROR],
+        worker_error=failure_counts[JobFailureCategory.WORKER_ERROR],
+        unknown=failure_counts[JobFailureCategory.UNKNOWN],
+    )
     review_counts = {
         status: sum(1 for output in outputs if output.review_status == status)
         for status in OutputReviewStatus
@@ -114,6 +128,12 @@ def project_job_batch_report(
             approved=approved,
             rejected=review_counts[OutputReviewStatus.REJECTED],
         ),
+        failure_counts=failure_summary,
+        alerts=_batch_alerts(
+            job_count=len(jobs),
+            failed_count=status_counts[JobStatus.FAILED],
+            failure_counts=failure_summary,
+        ),
     )
 
 
@@ -136,6 +156,7 @@ def project_job_batch_report_csv(
         "product_name",
         "sku",
         "status",
+        "failure_category",
         "priority",
         "planned_outputs",
         "outputs",
@@ -175,6 +196,7 @@ def project_job_batch_report_csv(
                 "product_name": job.product.name,
                 "sku": job.product.sku or "",
                 "status": job.status.value,
+                "failure_category": job.failure_category.value if job.failure_category else "",
                 "priority": job.priority,
                 "planned_outputs": len(job.output_plan),
                 "outputs": len(outputs),
@@ -257,6 +279,86 @@ def _entry_from_payload(payload: Any) -> XAISpendEntry | None:
 
 def _job_status_counts(jobs: list[JobRecord]) -> dict[JobStatus, int]:
     return {status: sum(1 for job in jobs if job.status == status) for status in JobStatus}
+
+
+def _job_failure_counts(jobs: list[JobRecord]) -> dict[JobFailureCategory, int]:
+    return {
+        category: sum(
+            1
+            for job in jobs
+            if job.status == JobStatus.FAILED and _job_failure_category(job) == category
+        )
+        for category in JobFailureCategory
+    }
+
+
+def _job_failure_category(job: JobRecord) -> JobFailureCategory:
+    return job.failure_category or classify_failure(job.error)
+
+
+def _batch_alerts(
+    *,
+    job_count: int,
+    failed_count: int,
+    failure_counts: ProjectJobBatchFailureCounts,
+) -> list[ProjectJobBatchAlert]:
+    alerts: list[ProjectJobBatchAlert] = []
+    if failed_count and failed_count == job_count:
+        alerts.append(
+            ProjectJobBatchAlert(
+                level="critical",
+                code="batch_blocked",
+                message=f"All {failed_count} jobs in this batch failed.",
+                count=failed_count,
+            )
+        )
+
+    for category, count in _failure_count_items(failure_counts):
+        if count == 0:
+            continue
+        level = (
+            "critical"
+            if category
+            in {JobFailureCategory.BUDGET_EXCEEDED, JobFailureCategory.SOURCE_ASSET_ERROR}
+            else "warning"
+        )
+        alerts.append(
+            ProjectJobBatchAlert(
+                level=level,
+                code=f"{category.value}_failures",
+                message=_failure_alert_message(category=category, count=count),
+                count=count,
+            )
+        )
+    return alerts
+
+
+def _failure_count_items(
+    failure_counts: ProjectJobBatchFailureCounts,
+) -> list[tuple[JobFailureCategory, int]]:
+    return [
+        (JobFailureCategory.SOURCE_ASSET_ERROR, failure_counts.source_asset_error),
+        (JobFailureCategory.PROVIDER_ERROR, failure_counts.provider_error),
+        (JobFailureCategory.TIMEOUT, failure_counts.timeout),
+        (JobFailureCategory.BUDGET_EXCEEDED, failure_counts.budget_exceeded),
+        (JobFailureCategory.RENDERER_ERROR, failure_counts.renderer_error),
+        (JobFailureCategory.WORKER_ERROR, failure_counts.worker_error),
+        (JobFailureCategory.UNKNOWN, failure_counts.unknown),
+    ]
+
+
+def _failure_alert_message(*, category: JobFailureCategory, count: int) -> str:
+    plural = "job" if count == 1 else "jobs"
+    labels = {
+        JobFailureCategory.SOURCE_ASSET_ERROR: "source asset failures need catalog fixes",
+        JobFailureCategory.PROVIDER_ERROR: "provider failures may be transient",
+        JobFailureCategory.TIMEOUT: "timeout failures may need retry or longer worker TTL",
+        JobFailureCategory.BUDGET_EXCEEDED: "budget failures need xAI budget changes",
+        JobFailureCategory.RENDERER_ERROR: "renderer failures need worker/backend review",
+        JobFailureCategory.WORKER_ERROR: "worker contract failures need operator review",
+        JobFailureCategory.UNKNOWN: "uncategorized failures need triage",
+    }
+    return f"{count} {plural}: {labels[category]}."
 
 
 def _ticks_to_usd(ticks: int) -> float:

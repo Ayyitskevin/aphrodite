@@ -1025,7 +1025,12 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         dependencies=[Depends(require_api_auth)],
     )
     def update_job_status(job_id: str, payload: JobStatusUpdate) -> JobRecord:
-        job = store.update_status(job_id, payload.status, error=payload.error)
+        job = store.update_status(
+            job_id,
+            payload.status,
+            error=payload.error,
+            failure_category=payload.failure_category,
+        )
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
         return job
@@ -1089,6 +1094,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             job_id=job_id,
             claim_token=payload.claim_token,
             error=payload.error,
+            failure_category=payload.failure_category,
         )
         if job is None:
             raise HTTPException(

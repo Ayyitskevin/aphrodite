@@ -1,7 +1,14 @@
 import sqlite3
 from pathlib import Path
 
-from aphrodite.domain import JobCreate, JobOutputCreate, JobStatus, OutputReviewStatus, ProductInput
+from aphrodite.domain import (
+    JobCreate,
+    JobFailureCategory,
+    JobOutputCreate,
+    JobStatus,
+    OutputReviewStatus,
+    ProductInput,
+)
 from aphrodite.store import JobStore, OutputVariantNotFoundError
 
 
@@ -198,4 +205,24 @@ def test_fail_claimed_job_marks_job_failed(tmp_path: Path) -> None:
     assert failed is not None
     assert failed.status == JobStatus.FAILED
     assert failed.error == "renderer crashed"
+    assert failed.failure_category == JobFailureCategory.RENDERER_ERROR
     assert failed.claimed_by is None
+
+
+def test_fail_claimed_job_persists_supplied_failure_category(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    store.create_job(job_request())
+    claim = store.claim_next_job(worker_id="renderer")
+    assert claim is not None
+
+    failed = store.fail_claimed_job(
+        job_id=claim.job.id,
+        claim_token=claim.claim_token,
+        error="xAI image request timed out",
+        failure_category=JobFailureCategory.TIMEOUT,
+    )
+
+    assert failed is not None
+    assert failed.status == JobStatus.FAILED
+    assert failed.failure_category == JobFailureCategory.TIMEOUT

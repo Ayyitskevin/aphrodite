@@ -574,6 +574,8 @@ def test_admin_project_import_history_and_retry_controls(
     assert detail.status_code == 200
     assert "Import Batch" in detail.text
     assert "renderer crashed" in detail.text
+    assert "Renderer Error" in detail.text
+    assert "Alerts" in detail.text
     assert "Report JSON" in detail.text
     assert "Report CSV" in detail.text
     assert "$0.0600" in detail.text
@@ -583,6 +585,8 @@ def test_admin_project_import_history_and_retry_controls(
     assert report.json()["approved_output_count"] == 1
     assert report.json()["status_counts"]["completed"] == 1
     assert report.json()["status_counts"]["failed"] == 1
+    assert report.json()["failure_counts"]["renderer_error"] == 1
+    assert report.json()["alerts"][0]["code"] == "renderer_error_failures"
     assert report.json()["xai_cost_usd"] == 0.06
     assert csv_report.status_code == 200
     assert "History" in csv_report.text

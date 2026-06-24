@@ -6,6 +6,7 @@ import pytest
 from aphrodite.domain import (
     ClientCreate,
     JobCreate,
+    JobFailureCategory,
     JobStatus,
     ProductInput,
     ProjectCreate,
@@ -113,6 +114,7 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
         tables = {row[0] for row in table_rows}
     assert "project_id" in columns
     assert "batch_id" in columns
+    assert "failure_category" in columns
     assert "project_job_batches" in tables
 
 
@@ -296,6 +298,7 @@ def test_store_retries_failed_project_and_batch_jobs(tmp_path: Path) -> None:
     )
     failed = store.update_status(created[0].id, JobStatus.FAILED, error="renderer crashed")
     assert failed is not None
+    assert failed.failure_category == JobFailureCategory.RENDERER_ERROR
 
     retried = store.retry_failed_jobs(project_id=project.id, batch_id=created[0].batch_id)
 
@@ -305,6 +308,7 @@ def test_store_retries_failed_project_and_batch_jobs(tmp_path: Path) -> None:
     assert requeued is not None
     assert requeued.status == JobStatus.QUEUED
     assert requeued.error is None
+    assert requeued.failure_category is None
     assert untouched is not None
     assert untouched.status == JobStatus.QUEUED
 

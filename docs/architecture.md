@@ -20,7 +20,9 @@ Aphrodite API                    Aphrodite API  current scope   current scope  w
 ## Modules
 
 - `aphrodite.api`: FastAPI routes, admin routes, and application factory.
-- `aphrodite.admin`: operator HTML views and xAI spend ledger parsing.
+- `aphrodite.admin`: operator HTML views.
+- `aphrodite.failures`: stable failure category derivation for renderer errors.
+- `aphrodite.reporting`: xAI spend parsing plus batch report and alert derivation.
 - `aphrodite.assets`: upload validation, metadata extraction, and local asset writes.
 - `aphrodite.config`: environment-backed settings.
 - `aphrodite.domain`: client, project, asset, request, job, status, worker claim, and output models.
@@ -53,9 +55,9 @@ same claim and output contract. CSV imports are parsed into the same batch reque
 which keeps spreadsheet intake out of worker and renderer code. Batch records are saved
 with a source label and linked job IDs so project dashboards can show import history and
 batch detail pages. Batch reports derive spend, throughput, approval rate, timestamps,
-and CSV/JSON status exports from those linked jobs plus the xAI cost ledger. Retry
-controls only requeue failed jobs, clearing failure and claim metadata without touching
-completed or approved outputs.
+failure category counts, alerts, and CSV/JSON status exports from those linked jobs plus
+the xAI cost ledger. Retry controls only requeue failed jobs, clearing failure and claim
+metadata without touching completed or approved outputs.
 
 Completed outputs start in `pending_review`. Admin review actions can approve or reject
 each variant with an optional note from job or project views. Project views can also
