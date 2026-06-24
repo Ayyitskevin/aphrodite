@@ -1089,6 +1089,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 filename=file.filename,
                 declared_content_type=file.content_type,
                 max_bytes=settings.max_upload_bytes,
+                max_pixels=settings.max_image_pixels,
             )
             asset_id = str(uuid.uuid4())
             storage_path = storage_path_for(asset_id, validated.extension)

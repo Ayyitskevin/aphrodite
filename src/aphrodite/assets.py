@@ -47,6 +47,7 @@ def validate_image_upload(
     filename: str | None,
     declared_content_type: str | None,
     max_bytes: int,
+    max_pixels: int = 50_000_000,
 ) -> ValidatedAsset:
     if not content:
         raise AssetValidationError("uploaded asset is empty", status_code=422)
@@ -60,7 +61,7 @@ def validate_image_upload(
     if declared not in GENERIC_CONTENT_TYPES and declared not in supported_content_types:
         raise AssetValidationError("unsupported image type; upload a PNG or JPEG")
 
-    content_type, extension, width, height = _decode_image(content)
+    content_type, extension, width, height = _decode_image(content, max_pixels=max_pixels)
     if declared not in GENERIC_CONTENT_TYPES and declared != content_type:
         raise AssetValidationError("declared content type does not match image bytes")
 
@@ -104,7 +105,7 @@ def _safe_filename(filename: str | None) -> str:
     return safe[:180] or "upload"
 
 
-def _decode_image(content: bytes) -> tuple[str, str, int, int]:
+def _decode_image(content: bytes, *, max_pixels: int) -> tuple[str, str, int, int]:
     try:
         with Image.open(BytesIO(content)) as image:
             image.verify()
@@ -118,11 +119,17 @@ def _decode_image(content: bytes) -> tuple[str, str, int, int]:
     if supported is None:
         raise AssetValidationError("unsupported image type; upload a PNG or JPEG")
 
-    _validate_dimensions(width, height)
+    _validate_dimensions(width, height, max_pixels=max_pixels)
     content_type, extension = supported
     return content_type, extension, width, height
 
 
-def _validate_dimensions(width: int, height: int) -> None:
+def _validate_dimensions(width: int, height: int, *, max_pixels: int) -> None:
     if width <= 0 or height <= 0:
         raise AssetValidationError("image dimensions must be positive", status_code=422)
+    # Read from the header before anything decodes the pixels, so a bomb is rejected
+    # here rather than when the renderer later expands it into memory.
+    if width * height > max_pixels:
+        raise AssetValidationError(
+            "image resolution exceeds the maximum allowed pixels", status_code=413
+        )
