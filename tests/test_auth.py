@@ -91,6 +91,26 @@ def test_batch_csv_route_requires_configured_api_token(tmp_path: Path) -> None:
     assert authorized.status_code == 404
 
 
+def test_batch_report_routes_require_configured_api_token(tmp_path: Path) -> None:
+    test_client = client(tmp_path)
+
+    missing_json = test_client.get("/v1/projects/missing/jobs/batches/missing/report.json")
+    missing_csv = test_client.get("/v1/projects/missing/jobs/batches/missing/report.csv")
+    authorized_json = test_client.get(
+        "/v1/projects/missing/jobs/batches/missing/report.json",
+        headers=API_HEADERS,
+    )
+    authorized_csv = test_client.get(
+        "/v1/projects/missing/jobs/batches/missing/report.csv",
+        headers=API_HEADERS,
+    )
+
+    assert missing_json.status_code == 401
+    assert missing_csv.status_code == 401
+    assert authorized_json.status_code == 404
+    assert authorized_csv.status_code == 404
+
+
 def test_owner_mutation_routes_require_configured_api_token(tmp_path: Path) -> None:
     test_client = client(tmp_path)
 

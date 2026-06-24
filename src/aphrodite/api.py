@@ -26,16 +26,11 @@ from pydantic import ValidationError
 
 from aphrodite import __version__
 from aphrodite.admin import (
-    XAISpendSummary,
-    project_job_batch_report,
-    project_job_batch_report_csv,
-    read_xai_spend_summary,
     render_admin_catalog_import,
     render_admin_job_detail,
     render_admin_jobs_index,
     render_admin_project_batch_detail,
     render_admin_project_detail,
-    xai_cost_ledger_path,
 )
 from aphrodite.assets import (
     AssetStorageError,
@@ -74,6 +69,13 @@ from aphrodite.domain import (
     WorkerJobClaim,
 )
 from aphrodite.marketplaces import list_marketplace_specs
+from aphrodite.reporting import (
+    XAISpendSummary,
+    project_job_batch_report,
+    project_job_batch_report_csv,
+    read_xai_spend_summary,
+    xai_cost_ledger_path,
+)
 from aphrodite.storage import OutputStorageError, resolve_existing_media_file
 from aphrodite.store import (
     AssetNotFoundError,
@@ -818,6 +820,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     @app.get(
         "/v1/projects/{project_id}/jobs/batches/{batch_id}/report.json",
         response_model=ProjectJobBatchReport,
+        dependencies=[Depends(require_api_auth)],
     )
     def get_project_job_batch_report(
         project_id: str,
@@ -827,7 +830,10 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         batch = project_batch_or_404(project_id, batch_id)
         return project_job_batch_report(batch=batch, spend=_xai_spend_summary(settings.media_root))
 
-    @app.get("/v1/projects/{project_id}/jobs/batches/{batch_id}/report.csv")
+    @app.get(
+        "/v1/projects/{project_id}/jobs/batches/{batch_id}/report.csv",
+        dependencies=[Depends(require_api_auth)],
+    )
     def get_project_job_batch_report_csv(project_id: str, batch_id: str) -> Response:
         project_or_404(project_id)
         batch = project_batch_or_404(project_id, batch_id)
