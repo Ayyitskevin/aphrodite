@@ -53,6 +53,6 @@ same claim and output contract. CSV imports are parsed into the same batch reque
 which keeps spreadsheet intake out of worker and renderer code. The admin import screen is a thin HTML shell over that parser and persistence path.
 
 Completed outputs start in `pending_review`. Admin review actions can approve or reject
-each variant with an optional note, and approved media can be downloaded individually or
+each variant with an optional note from job or project views, and approved media can be downloaded individually or
 as a ZIP. Replacing a rendered output resets its review state so exports cannot silently
 serve unapproved regenerated media.

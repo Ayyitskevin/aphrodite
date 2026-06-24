@@ -69,6 +69,53 @@ def completed_job(test_client: TestClient, tmp_path: Path) -> tuple[dict, dict]:
     return upload, test_client.get(f"/v1/jobs/{job['id']}").json()
 
 
+def completed_project_job(
+    test_client: TestClient,
+    tmp_path: Path,
+    *,
+    project_id: str,
+    name: str,
+    sku: str,
+) -> dict:
+    job = test_client.post(
+        "/v1/jobs",
+        json={
+            "project_id": project_id,
+            "product": {
+                "name": name,
+                "sku": sku,
+                "source_image_uri": f"file:///media/{sku.lower()}/source.jpg",
+            },
+            "marketplace_targets": ["catalog_square"],
+        },
+    ).json()
+    claim = test_client.post(
+        "/v1/worker/jobs/claim",
+        json={"worker_id": "project-admin-renderer"},
+    ).json()
+
+    output_path = f"outputs/{job['id']}/catalog_square.png"
+    absolute_output = tmp_path / "media" / output_path
+    absolute_output.parent.mkdir(parents=True, exist_ok=True)
+    absolute_output.write_bytes(PNG_1X1)
+
+    response = test_client.post(
+        f"/v1/worker/jobs/{job['id']}/outputs",
+        json={
+            "claim_token": claim["claim_token"],
+            "variant_id": "catalog_square",
+            "storage_path": output_path,
+            "content_type": "image/png",
+            "bytes": len(PNG_1X1),
+            "sha256": hashlib.sha256(PNG_1X1).hexdigest(),
+            "width": 1,
+            "height": 1,
+        },
+    )
+    assert response.status_code == 200
+    return test_client.get(f"/v1/jobs/{job['id']}").json()
+
+
 def owned_completed_job(test_client: TestClient, tmp_path: Path) -> tuple[dict, dict, dict]:
     client_payload = test_client.post("/v1/clients", json={"name": "Admin Client"}).json()
     project_payload = test_client.post(
@@ -204,6 +251,97 @@ def test_admin_review_missing_output_returns_404(tmp_path: Path, monkeypatch) ->
     assert response.status_code == 404
 
 
+def test_admin_project_dashboard_review_and_export_flow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Project Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Project Catalog"},
+    ).json()
+    first_job = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=project_payload["id"],
+        name="Project mug",
+        sku="PROJ-MUG",
+    )
+    second_job = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=project_payload["id"],
+        name="Project tote",
+        sku="PROJ-TOTE",
+    )
+
+    dashboard = test_client.get(f"/admin/projects/{project_payload['id']}")
+    pending = test_client.get(
+        f"/admin/projects/{project_payload['id']}",
+        params={"review": "pending_review"},
+    )
+    approve = test_client.post(
+        f"/admin/projects/{project_payload['id']}/jobs/{first_job['id']}/outputs/catalog_square/approve",
+        params={"review": "pending_review"},
+    )
+    reject = test_client.post(
+        f"/admin/projects/{project_payload['id']}/jobs/{second_job['id']}/outputs/catalog_square/reject",
+        data={"note": "Logo clipped"},
+    )
+    rejected = test_client.get(
+        f"/admin/projects/{project_payload['id']}",
+        params={"review": "rejected"},
+    )
+    export = test_client.get(f"/admin/projects/{project_payload['id']}/exports.zip")
+
+    assert dashboard.status_code == 200
+    assert "Project Catalog" in dashboard.text
+    assert "Review Queue" in dashboard.text
+    assert "Project mug" in dashboard.text
+    assert "Project tote" in dashboard.text
+    assert pending.status_code == 200
+    assert "pending review" in pending.text
+    assert approve.status_code == 200
+    assert reject.status_code == 200
+    assert "Logo clipped" in rejected.text
+    assert export.status_code == 200
+    assert export.headers["content-disposition"].startswith("attachment;")
+    with zipfile.ZipFile(io.BytesIO(export.content)) as archive:
+        assert len(archive.namelist()) == 1
+        assert archive.namelist()[0].endswith("/catalog_square.png")
+        assert archive.read(archive.namelist()[0]) == PNG_1X1
+
+
+def test_admin_project_dashboard_blocks_cross_project_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Project Client"}).json()
+    first_project = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "First Catalog"},
+    ).json()
+    second_project = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Second Catalog"},
+    ).json()
+    job = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=first_project["id"],
+        name="Cross project mug",
+        sku="CROSS-MUG",
+    )
+
+    response = test_client.post(
+        f"/admin/projects/{second_project['id']}/jobs/{job['id']}/outputs/catalog_square/approve"
+    )
+
+    assert response.status_code == 404
+
+
 def test_admin_import_screen_lists_projects_and_template(tmp_path: Path, monkeypatch) -> None:
     test_client = client(tmp_path, monkeypatch)
     client_payload = test_client.post("/v1/clients", json={"name": "Import Client"}).json()
@@ -328,6 +466,7 @@ def test_admin_jobs_show_and_filter_ownership(tmp_path: Path, monkeypatch) -> No
     by_client = test_client.get("/admin/jobs", params={"client_id": client_payload["id"]})
     by_project = test_client.get("/admin/jobs", params={"project_id": project_payload["id"]})
     detail = test_client.get(f"/admin/jobs/{job['id']}")
+    project_detail = test_client.get(f"/admin/projects/{project_payload['id']}")
 
     assert index.status_code == 200
     assert "Admin Client" in index.text
@@ -336,9 +475,12 @@ def test_admin_jobs_show_and_filter_ownership(tmp_path: Path, monkeypatch) -> No
     assert "Owned mug" in by_client.text
     assert by_project.status_code == 200
     assert "Owned mug" in by_project.text
+    assert "Open project dashboard" in by_project.text
     assert detail.status_code == 200
     assert "Admin Client" in detail.text
     assert "Admin Catalog" in detail.text
+    assert project_detail.status_code == 200
+    assert "Owned mug" in project_detail.text
 
 
 def test_admin_jobs_and_detail_show_completed_job_and_spend(tmp_path: Path, monkeypatch) -> None:
@@ -434,10 +576,14 @@ def test_admin_routes_use_api_token_when_configured(tmp_path: Path, monkeypatch)
 
     missing = test_client.get("/admin/jobs")
     missing_import = test_client.get("/admin/import")
+    missing_project = test_client.get("/admin/projects/missing")
     authorized = test_client.get("/admin/jobs", headers=API_HEADERS)
     authorized_import = test_client.get("/admin/import", headers=API_HEADERS)
+    authorized_project = test_client.get("/admin/projects/missing", headers=API_HEADERS)
 
     assert missing.status_code == 401
     assert missing_import.status_code == 401
+    assert missing_project.status_code == 401
     assert authorized.status_code == 200
     assert authorized_import.status_code == 200
+    assert authorized_project.status_code == 404

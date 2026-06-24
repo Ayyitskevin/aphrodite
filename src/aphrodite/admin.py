@@ -13,7 +13,9 @@ from typing import Any
 from urllib.parse import quote
 
 from aphrodite.domain import (
+    JobOutputRecord,
     JobRecord,
+    JobStatus,
     OutputReviewStatus,
     ProjectJobBatchRecord,
     ProjectRecord,
@@ -80,10 +82,16 @@ def read_xai_spend_summary(
     )
 
 
-def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) -> str:
+def render_admin_jobs_index(
+    *,
+    jobs: list[JobRecord],
+    spend: XAISpendSummary,
+    active_project: ProjectRecord | None = None,
+) -> str:
     rows = "\n".join(_job_row(job, spend=spend) for job in jobs)
     if not rows:
         rows = '<tr><td colspan="8" class="muted">No jobs yet.</td></tr>'
+    project_banner = _project_admin_banner(active_project) if active_project is not None else ""
     return _page(
         title="Aphrodite Jobs",
         body=f"""
@@ -96,6 +104,7 @@ def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) ->
           <div><span>Total</span><strong>${spend.total_cost_usd:.4f}</strong></div>
           <div><span>Recent xAI rows</span><strong>{len(spend.entries)}</strong></div>
         </section>
+        {project_banner}
         <section>
           <h2>Recent Jobs</h2>
           <table>
@@ -112,6 +121,72 @@ def render_admin_jobs_index(*, jobs: list[JobRecord], spend: XAISpendSummary) ->
               </tr>
             </thead>
             <tbody>{rows}</tbody>
+          </table>
+        </section>
+        """,
+    )
+
+
+def render_admin_project_detail(
+    *,
+    project: ProjectRecord,
+    jobs: list[JobRecord],
+    spend: XAISpendSummary,
+    review_filter: OutputReviewStatus | None = None,
+) -> str:
+    output_rows = "\n".join(
+        _project_output_row(
+            project=project,
+            job=job,
+            output=output,
+            review_filter=review_filter,
+        )
+        for job, output in _project_review_outputs(jobs=jobs, review_filter=review_filter)
+    )
+    if not output_rows:
+        output_rows = '<tr><td colspan="8" class="muted">No outputs match this view.</td></tr>'
+
+    job_rows = "\n".join(_project_job_row(job) for job in jobs)
+    if not job_rows:
+        job_rows = '<tr><td colspan="6" class="muted">No jobs for this project yet.</td></tr>'
+
+    export_link = ""
+    if _project_approved_output_count(jobs):
+        export_link = (
+            f'<a class="button" href="/admin/projects/{_u(project.id)}/exports.zip">'
+            "Export approved ZIP</a>"
+        )
+    return _page(
+        title=f"Aphrodite Project {project.name}",
+        body=f"""
+        <header>
+          <h1>{_h(project.name)}</h1>
+          <nav><a href="/admin/jobs">Jobs</a><a href="/admin/import?project_id={_u(project.id)}">Import CSV</a><a href="/admin/jobs?project_id={_u(project.id)}">Job list</a>{export_link}</nav>
+        </header>
+        <section class="summary">
+          <dl>
+            <div><dt>Client</dt><dd>{_project_client_link(project)}</dd></div>
+            <div><dt>Project ID</dt><dd>{_h(project.id)}</dd></div>
+            <div><dt>External ID</dt><dd>{_h(project.external_id or "-")}</dd></div>
+            <div><dt>Created</dt><dd>{_h(project.created_at)}</dd></div>
+            <div><dt>Updated</dt><dd>{_h(project.updated_at)}</dd></div>
+            <div><dt>xAI spend</dt><dd>${_project_spend_usd(jobs=jobs, spend=spend):.4f}</dd></div>
+          </dl>
+        </section>
+        {_project_metrics(jobs)}
+        <section>
+          <h2>Review Queue</h2>
+          {_project_review_nav(project=project, review_filter=review_filter)}
+          <table>
+            <thead><tr><th>Product</th><th>Variant</th><th>Review</th><th>Output</th><th>Size</th><th>Updated</th><th>Note</th><th>Actions</th></tr></thead>
+            <tbody>{output_rows}</tbody>
+          </table>
+        </section>
+        <section>
+          <h2>Project Jobs</h2>
+          <table>
+            <thead><tr><th>Product</th><th>Status</th><th>Outputs</th><th>Review</th><th>Priority</th><th>Updated</th></tr></thead>
+            <tbody>{job_rows}</tbody>
           </table>
         </section>
         """,
@@ -339,13 +414,28 @@ def _job_row(job: JobRecord, *, spend: XAISpendSummary) -> str:
     """
 
 
+def _project_admin_banner(project: ProjectRecord) -> str:
+    return f"""
+    <section>
+      <div class="alert">
+        <strong>{_h(project.name)}</strong>
+        <small>{_project_client_label(project)}</small>
+        <div class="actions-row">
+          <a class="button" href="/admin/projects/{_u(project.id)}">Open project dashboard</a>
+          <a class="button" href="/admin/import?project_id={_u(project.id)}">Import CSV</a>
+        </div>
+      </div>
+    </section>
+    """
+
+
 def _ownership_summary(job: JobRecord) -> str:
     if job.project is None:
         return '<span class="muted">Unassigned</span>'
     client_label = job.project.client.name if job.project.client is not None else job.project.client_id
     return (
         f'<a href="/admin/jobs?client_id={_u(job.project.client_id)}">{_h(client_label)}</a>'
-        f'<small><a href="/admin/jobs?project_id={_u(job.project.id)}">{_h(job.project.name)}</a></small>'
+        f'<small><a href="/admin/projects/{_u(job.project.id)}">{_h(job.project.name)}</a></small>'
     )
 
 
@@ -359,7 +449,7 @@ def _client_detail(job: JobRecord) -> str:
 def _project_detail(job: JobRecord) -> str:
     if job.project is None:
         return "-"
-    return f'<a href="/admin/jobs?project_id={_u(job.project.id)}">{_h(job.project.name)}</a>'
+    return f'<a href="/admin/projects/{_u(job.project.id)}">{_h(job.project.name)}</a>'
 
 
 def _review_summary(job: JobRecord) -> str:
@@ -511,13 +601,141 @@ def _import_result_table(result: ProjectJobBatchRecord) -> str:
         """
         for job in result.jobs
     )
-    project_link = f'<p><a class="button" href="/admin/jobs?project_id={_u(result.project_id)}">View project jobs</a></p>'
+    project_link = f'<p><a class="button" href="/admin/projects/{_u(result.project_id)}">Open project dashboard</a></p>'
     return f"""
     {project_link}
     <table>
       <thead><tr><th>Product</th><th>SKU</th><th>Targets</th><th>Priority</th><th>Status</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
+    """
+
+
+def _project_client_label(project: ProjectRecord) -> str:
+    return project.client.name if project.client is not None else project.client_id
+
+
+def _project_client_link(project: ProjectRecord) -> str:
+    return f'<a href="/admin/jobs?client_id={_u(project.client_id)}">{_h(_project_client_label(project))}</a>'
+
+
+def _project_metrics(jobs: list[JobRecord]) -> str:
+    job_counts = {status: sum(1 for job in jobs if job.status == status) for status in JobStatus}
+    outputs = [output for job in jobs for output in job.outputs]
+    pending = sum(1 for output in outputs if output.review_status == OutputReviewStatus.PENDING_REVIEW)
+    approved = sum(1 for output in outputs if output.review_status == OutputReviewStatus.APPROVED)
+    rejected = sum(1 for output in outputs if output.review_status == OutputReviewStatus.REJECTED)
+    return f"""
+    <section class="metrics metrics-wide">
+      <div><span>Jobs</span><strong>{len(jobs)}</strong></div>
+      <div><span>Queued</span><strong>{job_counts[JobStatus.QUEUED]}</strong></div>
+      <div><span>Rendering</span><strong>{job_counts[JobStatus.RENDERING]}</strong></div>
+      <div><span>Completed</span><strong>{job_counts[JobStatus.COMPLETED]}</strong></div>
+      <div><span>Failed</span><strong>{job_counts[JobStatus.FAILED]}</strong></div>
+      <div><span>Outputs</span><strong>{len(outputs)}</strong></div>
+      <div><span>Pending</span><strong>{pending}</strong></div>
+      <div><span>Approved</span><strong>{approved}</strong></div>
+      <div><span>Rejected</span><strong>{rejected}</strong></div>
+    </section>
+    """
+
+
+def _project_review_nav(
+    *,
+    project: ProjectRecord,
+    review_filter: OutputReviewStatus | None,
+) -> str:
+    items = [
+        ("All", None),
+        ("Pending", OutputReviewStatus.PENDING_REVIEW),
+        ("Approved", OutputReviewStatus.APPROVED),
+        ("Rejected", OutputReviewStatus.REJECTED),
+    ]
+    links = []
+    for label, value in items:
+        href = f"/admin/projects/{_u(project.id)}"
+        if value is not None:
+            href += f"?review={_u(value.value)}"
+        selected = " selected" if value == review_filter else ""
+        if value is None and review_filter is None:
+            selected = " selected"
+        links.append(f'<a class="filter-link{selected}" href="{href}">{_h(label)}</a>')
+    return f'<nav class="filter-nav">{"".join(links)}</nav>'
+
+
+def _project_review_outputs(
+    *,
+    jobs: list[JobRecord],
+    review_filter: OutputReviewStatus | None,
+) -> list[tuple[JobRecord, JobOutputRecord]]:
+    rows = [(job, output) for job in jobs for output in job.outputs]
+    if review_filter is None:
+        return rows
+    return [(job, output) for job, output in rows if output.review_status == review_filter]
+
+
+def _project_approved_output_count(jobs: list[JobRecord]) -> int:
+    return sum(
+        1
+        for job in jobs
+        for output in job.outputs
+        if output.review_status == OutputReviewStatus.APPROVED
+    )
+
+
+def _project_spend_usd(*, jobs: list[JobRecord], spend: XAISpendSummary) -> float:
+    job_ids = {job.id for job in jobs}
+    return sum(entry.cost_usd for entry in spend.entries if entry.job_id in job_ids)
+
+
+def _project_output_row(
+    *,
+    project: ProjectRecord,
+    job: JobRecord,
+    output: JobOutputRecord,
+    review_filter: OutputReviewStatus | None,
+) -> str:
+    filter_query = f"?review={_u(review_filter.value)}" if review_filter is not None else ""
+    src = f"/admin/jobs/{_u(job.id)}/outputs/{_u(output.variant_id)}/file"
+    export = ""
+    if output.review_status == OutputReviewStatus.APPROVED:
+        export = f'<a class="button" href="/admin/jobs/{_u(job.id)}/outputs/{_u(output.variant_id)}/export">Export</a>'
+    note = _h(output.review_note or "-")
+    return f"""
+    <tr>
+      <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.product.sku or job.id)}</small></td>
+      <td>{_h(output.variant_id)}</td>
+      <td><span class="review review-{_h(output.review_status.value)}">{_h(output.review_status.value.replace("_", " "))}</span></td>
+      <td><a href="{src}">{_h(Path(output.storage_path).name)}</a></td>
+      <td>{output.width}x{output.height}<small>{output.bytes} bytes</small></td>
+      <td>{_h(output.updated_at)}</td>
+      <td>{note}</td>
+      <td>
+        <div class="actions-inline">
+          <form method="post" action="/admin/projects/{_u(project.id)}/jobs/{_u(job.id)}/outputs/{_u(output.variant_id)}/approve{filter_query}">
+            <button type="submit">Approve</button>
+          </form>
+          <form method="post" action="/admin/projects/{_u(project.id)}/jobs/{_u(job.id)}/outputs/{_u(output.variant_id)}/reject{filter_query}">
+            <textarea class="compact" name="note" maxlength="2000" placeholder="Reason"></textarea>
+            <button type="submit" class="danger">Reject</button>
+          </form>
+          {export}
+        </div>
+      </td>
+    </tr>
+    """
+
+
+def _project_job_row(job: JobRecord) -> str:
+    return f"""
+    <tr>
+      <td><a href="/admin/jobs/{_u(job.id)}">{_h(job.product.name)}</a><small>{_h(job.id)}</small></td>
+      <td><span class="status status-{_h(job.status.value)}">{_h(job.status.value)}</span></td>
+      <td>{len(job.outputs)} / {len(job.output_plan)}</td>
+      <td>{_review_summary(job)}</td>
+      <td>{job.priority}</td>
+      <td>{_h(job.updated_at)}</td>
+    </tr>
     """
 
 
@@ -580,6 +798,7 @@ def _page(*, title: str, body: str) -> str:
           th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }}
           small, .muted {{ display: block; color: var(--muted); }}
           .metrics {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
+          .metrics-wide {{ grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }}
           .metrics div {{ background: var(--panel); border: 1px solid var(--line); padding: 14px; }}
           .metrics span {{ display: block; color: var(--muted); font-size: 12px; }}
           .metrics strong {{ display: block; margin-top: 4px; font-size: 22px; }}
@@ -597,7 +816,9 @@ def _page(*, title: str, body: str) -> str:
           .review-approved {{ background: #eef7f5; color: var(--accent); }}
           .review-note {{ margin: 8px 0 0; color: var(--ink); overflow-wrap: anywhere; }}
           .actions {{ display: grid; gap: 8px; margin-top: 10px; }}
-          .actions-row {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+          .actions-row {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }}
+          .actions-inline {{ display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }}
+          .actions-inline form {{ display: flex; gap: 6px; }}
           .import-form {{ background: var(--panel); border: 1px solid var(--line); padding: 16px; }}
           .form-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }}
           .field {{ display: grid; gap: 6px; }}
@@ -605,6 +826,9 @@ def _page(*, title: str, body: str) -> str:
           .checkbox-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }}
           .checkbox-grid label {{ display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: start; border: 1px solid var(--line); padding: 8px; }}
           .checkbox-grid small {{ grid-column: 2; }}
+          .filter-nav {{ margin: 0 0 12px; }}
+          .filter-link {{ display: inline-block; border: 1px solid var(--line); padding: 5px 9px; }}
+          .filter-link.selected {{ background: #eef7f5; color: var(--accent); }}
           .alert {{ background: var(--panel); border: 1px solid var(--line); padding: 12px; }}
           .alert-error {{ border-color: #f0b4ae; color: var(--bad); background: #fff7f6; }}
           .alert-success {{ border-color: #9ed7ca; color: var(--accent); background: #eef7f5; }}
@@ -612,6 +836,7 @@ def _page(*, title: str, body: str) -> str:
           input, select, textarea {{ width: 100%; border: 1px solid var(--line); padding: 8px; font: inherit; background: #fff; color: var(--ink); }}
           input[type="checkbox"] {{ width: auto; margin-top: 3px; }}
           textarea {{ min-height: 56px; resize: vertical; }}
+          textarea.compact {{ width: 160px; min-height: 34px; }}
           button, .button {{ display: inline-block; width: fit-content; border: 1px solid var(--line); background: #eef7f5; color: var(--accent); padding: 6px 10px; font: inherit; cursor: pointer; text-decoration: none; }}
           button:hover, .button:hover {{ text-decoration: none; filter: brightness(0.97); }}
           .danger {{ background: #fff1f0; color: var(--bad); }}

@@ -44,11 +44,12 @@ Admin views:
 - `http://127.0.0.1:8020/admin/import`
 - `http://127.0.0.1:8020/admin/jobs?client_id=<client id>`
 - `http://127.0.0.1:8020/admin/jobs?project_id=<project id>`
+- `http://127.0.0.1:8020/admin/projects/<project id>`
 - `http://127.0.0.1:8020/admin/spend.json`
 
 Completed outputs enter `pending_review`. Operators can approve or reject variants from
-the job detail page. Only approved outputs are available through the single-output export
-link or the approved-output ZIP export.
+the job detail page or a project dashboard. Only approved outputs are available through
+the single-output export link, job ZIP export, or project ZIP export.
 
 Upload a source product image:
 
@@ -216,5 +217,5 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add project-level export bundles and review dashboards.
+- Add review bulk actions for project dashboards.
 - Add project-level import history and retry controls.

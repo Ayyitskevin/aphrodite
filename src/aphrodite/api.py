@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 import zipfile
@@ -30,6 +31,7 @@ from aphrodite.admin import (
     render_admin_catalog_import,
     render_admin_job_detail,
     render_admin_jobs_index,
+    render_admin_project_detail,
     xai_cost_ledger_path,
 )
 from aphrodite.assets import (
@@ -129,6 +131,40 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 detail=f"source asset not found: {exc.asset_id}",
             ) from exc
 
+    def project_or_404(project_id: str) -> ProjectRecord:
+        project = store.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+        return project
+
+    def project_job_or_404(project_id: str, job_id: str) -> JobRecord:
+        job = store.get_job(job_id)
+        if job is None or job.project_id != project_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="project job not found",
+            )
+        return job
+
+    def admin_project_page(
+        *,
+        project_id: str,
+        review_filter: OutputReviewStatus | None = None,
+        status_code: int = status.HTTP_200_OK,
+    ) -> HTMLResponse:
+        project = project_or_404(project_id)
+        jobs = store.list_jobs(project_id=project_id, limit=100)
+        spend = _xai_spend_summary(settings.media_root)
+        return HTMLResponse(
+            render_admin_project_detail(
+                project=project,
+                jobs=jobs,
+                spend=spend,
+                review_filter=review_filter,
+            ),
+            status_code=status_code,
+        )
+
     def admin_import_page(
         *,
         selected_project_id: str | None = None,
@@ -195,11 +231,14 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         project_id: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> HTMLResponse:
+        active_project = project_or_404(project_id) if project_id is not None else None
         jobs = store.list_jobs(client_id=client_id, project_id=project_id, limit=limit)
         if review == "needs_review":
             jobs = [job for job in jobs if _job_needs_review(job)]
         spend = _xai_spend_summary(settings.media_root)
-        return HTMLResponse(render_admin_jobs_index(jobs=jobs, spend=spend))
+        return HTMLResponse(
+            render_admin_jobs_index(jobs=jobs, spend=spend, active_project=active_project)
+        )
 
     @app.get(
         "/admin/import",
@@ -300,6 +339,111 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             priority=priority,
             result=result,
         )
+
+    @app.get(
+        "/admin/projects/{project_id}",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_detail(
+        project_id: str,
+        review: OutputReviewStatus | None = None,
+    ) -> HTMLResponse:
+        return admin_project_page(project_id=project_id, review_filter=review)
+
+    @app.post(
+        "/admin/projects/{project_id}/jobs/{job_id}/outputs/{variant_id}/approve",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_approve_output(
+        project_id: str,
+        job_id: str,
+        variant_id: str,
+        review: OutputReviewStatus | None = None,
+    ) -> HTMLResponse:
+        project_job_or_404(project_id, job_id)
+        output = store.review_output(
+            job_id=job_id,
+            variant_id=variant_id,
+            review_status=OutputReviewStatus.APPROVED,
+        )
+        if output is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        return admin_project_page(project_id=project_id, review_filter=review)
+
+    @app.post(
+        "/admin/projects/{project_id}/jobs/{job_id}/outputs/{variant_id}/reject",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_reject_output(
+        project_id: str,
+        job_id: str,
+        variant_id: str,
+        review: OutputReviewStatus | None = None,
+        note: Annotated[str | None, Form(max_length=2000)] = None,
+    ) -> HTMLResponse:
+        project_job_or_404(project_id, job_id)
+        output = store.review_output(
+            job_id=job_id,
+            variant_id=variant_id,
+            review_status=OutputReviewStatus.REJECTED,
+            note=note,
+        )
+        if output is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        return admin_project_page(project_id=project_id, review_filter=review)
+
+    @app.get(
+        "/admin/projects/{project_id}/exports.zip",
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_export_project_approved_outputs(project_id: str) -> Response:
+        project = project_or_404(project_id)
+        jobs = store.list_jobs(project_id=project_id, limit=100)
+        approved = [
+            (job, output)
+            for job in jobs
+            for output in job.outputs
+            if output.review_status == OutputReviewStatus.APPROVED
+        ]
+        if not approved:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no approved outputs found",
+            )
+
+        buffer = BytesIO()
+        archive_names: set[str] = set()
+        try:
+            with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for job, output in approved:
+                    path = resolve_existing_media_file(
+                        media_root=settings.media_root,
+                        relative_path=output.storage_path,
+                    )
+                    archive.write(
+                        path,
+                        arcname=_unique_archive_name(
+                            _project_export_arcname(job=job, output=output),
+                            used=archive_names,
+                        ),
+                    )
+        except OutputStorageError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="media path is outside the media root",
+            ) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="approved media file not found",
+            ) from exc
+
+        filename = f"{_safe_archive_part(project.name)}-approved-outputs.zip"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return Response(buffer.getvalue(), media_type="application/zip", headers=headers)
 
     @app.get(
         "/admin/jobs/{job_id}",
@@ -792,6 +936,40 @@ def _media_file_response(
         filename=path.name,
         content_disposition_type=disposition,
     )
+
+
+def _project_export_arcname(*, job: JobRecord, output: JobOutputRecord) -> str:
+    product = _safe_archive_part(job.product.sku or job.product.name or job.id)
+    variant = _safe_archive_part(output.variant_id)
+    extension = Path(output.storage_path).suffix or _extension_for_content_type(output.content_type)
+    return f"{product}-{job.id[:8]}/{variant}{extension}"
+
+
+def _unique_archive_name(arcname: str, *, used: set[str]) -> str:
+    if arcname not in used:
+        used.add(arcname)
+        return arcname
+    stem = Path(arcname).with_suffix("").as_posix()
+    suffix = Path(arcname).suffix
+    index = 2
+    while f"{stem}-{index}{suffix}" in used:
+        index += 1
+    unique = f"{stem}-{index}{suffix}"
+    used.add(unique)
+    return unique
+
+
+def _safe_archive_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
+    return safe or "item"
+
+
+def _extension_for_content_type(content_type: str) -> str:
+    if content_type == "image/png":
+        return ".png"
+    if content_type == "image/jpeg":
+        return ".jpg"
+    return ""
 
 
 def _require_bearer_token(*, authorization: str | None, expected_token: str | None) -> None:
