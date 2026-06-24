@@ -313,6 +313,87 @@ def test_admin_project_dashboard_review_and_export_flow(
         assert archive.read(archive.namelist()[0]) == PNG_1X1
 
 
+def test_admin_project_dashboard_bulk_review_actions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    test_client = client(tmp_path, monkeypatch)
+    client_payload = test_client.post("/v1/clients", json={"name": "Bulk Client"}).json()
+    project_payload = test_client.post(
+        "/v1/projects",
+        json={"client_id": client_payload["id"], "name": "Bulk Catalog"},
+    ).json()
+    approve_first = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=project_payload["id"],
+        name="Bulk mug",
+        sku="BULK-MUG",
+    )
+    approve_second = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=project_payload["id"],
+        name="Bulk tote",
+        sku="BULK-TOTE",
+    )
+
+    dashboard = test_client.get(f"/admin/projects/{project_payload['id']}")
+    approve = test_client.post(
+        f"/admin/projects/{project_payload['id']}/outputs/approve-pending"
+    )
+    approved_jobs = [
+        test_client.get(f"/v1/jobs/{approve_first['id']}").json(),
+        test_client.get(f"/v1/jobs/{approve_second['id']}").json(),
+    ]
+    export = test_client.get(f"/admin/projects/{project_payload['id']}/exports.zip")
+
+    assert dashboard.status_code == 200
+    assert "2 pending outputs" in dashboard.text
+    assert "Approve pending" in dashboard.text
+    assert "Reject pending" in dashboard.text
+    assert approve.status_code == 200
+    assert "Approved 2 pending outputs." in approve.text
+    assert "No pending outputs." in approve.text
+    assert [
+        output["review_status"] for job in approved_jobs for output in job["outputs"]
+    ] == ["approved", "approved"]
+    assert export.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(export.content)) as archive:
+        assert len(archive.namelist()) == 2
+
+    reject_first = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=project_payload["id"],
+        name="Bulk plate",
+        sku="BULK-PLATE",
+    )
+    reject_second = completed_project_job(
+        test_client,
+        tmp_path,
+        project_id=project_payload["id"],
+        name="Bulk bowl",
+        sku="BULK-BOWL",
+    )
+    reject = test_client.post(
+        f"/admin/projects/{project_payload['id']}/outputs/reject-pending",
+        data={"note": "Batch rejected"},
+    )
+    rejected_jobs = [
+        test_client.get(f"/v1/jobs/{reject_first['id']}").json(),
+        test_client.get(f"/v1/jobs/{reject_second['id']}").json(),
+    ]
+
+    assert reject.status_code == 200
+    assert "Rejected 2 pending outputs." in reject.text
+    assert [
+        (output["review_status"], output["review_note"])
+        for job in rejected_jobs
+        for output in job["outputs"]
+    ] == [("rejected", "Batch rejected"), ("rejected", "Batch rejected")]
+
+
 def test_admin_project_dashboard_blocks_cross_project_review(
     tmp_path: Path,
     monkeypatch,
@@ -577,13 +658,19 @@ def test_admin_routes_use_api_token_when_configured(tmp_path: Path, monkeypatch)
     missing = test_client.get("/admin/jobs")
     missing_import = test_client.get("/admin/import")
     missing_project = test_client.get("/admin/projects/missing")
+    missing_bulk = test_client.post("/admin/projects/missing/outputs/approve-pending")
     authorized = test_client.get("/admin/jobs", headers=API_HEADERS)
     authorized_import = test_client.get("/admin/import", headers=API_HEADERS)
     authorized_project = test_client.get("/admin/projects/missing", headers=API_HEADERS)
+    authorized_bulk = test_client.post(
+        "/admin/projects/missing/outputs/approve-pending", headers=API_HEADERS
+    )
 
     assert missing.status_code == 401
     assert missing_import.status_code == 401
     assert missing_project.status_code == 401
+    assert missing_bulk.status_code == 401
     assert authorized.status_code == 200
     assert authorized_import.status_code == 200
     assert authorized_project.status_code == 404
+    assert authorized_bulk.status_code == 404

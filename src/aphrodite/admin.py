@@ -133,6 +133,7 @@ def render_admin_project_detail(
     jobs: list[JobRecord],
     spend: XAISpendSummary,
     review_filter: OutputReviewStatus | None = None,
+    message: str | None = None,
 ) -> str:
     output_rows = "\n".join(
         _project_output_row(
@@ -150,6 +151,10 @@ def render_admin_project_detail(
     if not job_rows:
         job_rows = '<tr><td colspan="6" class="muted">No jobs for this project yet.</td></tr>'
 
+    message_banner = ""
+    if message:
+        message_banner = f'<section><div class="alert alert-success">{_h(message)}</div></section>'
+
     export_link = ""
     if _project_approved_output_count(jobs):
         export_link = (
@@ -163,6 +168,7 @@ def render_admin_project_detail(
           <h1>{_h(project.name)}</h1>
           <nav><a href="/admin/jobs">Jobs</a><a href="/admin/import?project_id={_u(project.id)}">Import CSV</a><a href="/admin/jobs?project_id={_u(project.id)}">Job list</a>{export_link}</nav>
         </header>
+        {message_banner}
         <section class="summary">
           <dl>
             <div><dt>Client</dt><dd>{_project_client_link(project)}</dd></div>
@@ -177,6 +183,7 @@ def render_admin_project_detail(
         <section>
           <h2>Review Queue</h2>
           {_project_review_nav(project=project, review_filter=review_filter)}
+          {_project_bulk_review_controls(project=project, jobs=jobs)}
           <table>
             <thead><tr><th>Product</th><th>Variant</th><th>Review</th><th>Output</th><th>Size</th><th>Updated</th><th>Note</th><th>Actions</th></tr></thead>
             <tbody>{output_rows}</tbody>
@@ -683,6 +690,42 @@ def _project_approved_output_count(jobs: list[JobRecord]) -> int:
     )
 
 
+def _project_pending_output_count(jobs: list[JobRecord]) -> int:
+    return sum(
+        1
+        for job in jobs
+        for output in job.outputs
+        if output.review_status == OutputReviewStatus.PENDING_REVIEW
+    )
+
+
+def _project_bulk_review_controls(*, project: ProjectRecord, jobs: list[JobRecord]) -> str:
+    pending = _project_pending_output_count(jobs)
+    if pending == 0:
+        return '<div class="alert bulk-review"><strong>No pending outputs.</strong></div>'
+
+    plural = "output" if pending == 1 else "outputs"
+    return f"""
+    <div class="alert bulk-review">
+      <strong>{pending} pending {plural}</strong>
+      <div class="actions-row">
+        <form method="post" action="/admin/projects/{_u(project.id)}/outputs/approve-pending">
+          <button type="submit">Approve pending</button>
+        </form>
+        <form method="post" action="/admin/projects/{_u(project.id)}/outputs/reject-pending">
+          <textarea
+            class="compact"
+            name="note"
+            maxlength="2000"
+            placeholder="Reason"
+          ></textarea>
+          <button type="submit" class="danger">Reject pending</button>
+        </form>
+      </div>
+    </div>
+    """
+
+
 def _project_spend_usd(*, jobs: list[JobRecord], spend: XAISpendSummary) -> float:
     job_ids = {job.id for job in jobs}
     return sum(entry.cost_usd for entry in spend.entries if entry.job_id in job_ids)
@@ -820,6 +863,8 @@ def _page(*, title: str, body: str) -> str:
           .actions-inline {{ display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }}
           .actions-inline form {{ display: flex; gap: 6px; }}
           .import-form {{ background: var(--panel); border: 1px solid var(--line); padding: 16px; }}
+          .bulk-review {{ margin: 0 0 12px; }}
+          .bulk-review form {{ display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }}
           .form-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }}
           .field {{ display: grid; gap: 6px; }}
           .field > span {{ color: var(--muted); font-size: 12px; text-transform: uppercase; }}

@@ -146,11 +146,21 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             )
         return job
 
+    def project_pending_outputs(project_id: str) -> list[tuple[JobRecord, JobOutputRecord]]:
+        jobs = store.list_jobs(project_id=project_id, limit=100)
+        return [
+            (job, output)
+            for job in jobs
+            for output in job.outputs
+            if output.review_status == OutputReviewStatus.PENDING_REVIEW
+        ]
+
     def admin_project_page(
         *,
         project_id: str,
         review_filter: OutputReviewStatus | None = None,
         status_code: int = status.HTTP_200_OK,
+        message: str | None = None,
     ) -> HTMLResponse:
         project = project_or_404(project_id)
         jobs = store.list_jobs(project_id=project_id, limit=100)
@@ -161,6 +171,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 jobs=jobs,
                 spend=spend,
                 review_filter=review_filter,
+                message=message,
             ),
             status_code=status_code,
         )
@@ -350,6 +361,62 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         review: OutputReviewStatus | None = None,
     ) -> HTMLResponse:
         return admin_project_page(project_id=project_id, review_filter=review)
+
+    @app.post(
+        "/admin/projects/{project_id}/outputs/approve-pending",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_approve_pending_outputs(project_id: str) -> HTMLResponse:
+        project_or_404(project_id)
+        pending = project_pending_outputs(project_id)
+        reviewed = 0
+        for job, output in pending:
+            if (
+                store.review_output(
+                    job_id=job.id,
+                    variant_id=output.variant_id,
+                    review_status=OutputReviewStatus.APPROVED,
+                )
+                is not None
+            ):
+                reviewed += 1
+
+        plural = "output" if reviewed == 1 else "outputs"
+        return admin_project_page(
+            project_id=project_id,
+            message=f"Approved {reviewed} pending {plural}.",
+        )
+
+    @app.post(
+        "/admin/projects/{project_id}/outputs/reject-pending",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_project_reject_pending_outputs(
+        project_id: str,
+        note: Annotated[str | None, Form(max_length=2000)] = None,
+    ) -> HTMLResponse:
+        project_or_404(project_id)
+        pending = project_pending_outputs(project_id)
+        reviewed = 0
+        for job, output in pending:
+            if (
+                store.review_output(
+                    job_id=job.id,
+                    variant_id=output.variant_id,
+                    review_status=OutputReviewStatus.REJECTED,
+                    note=note,
+                )
+                is not None
+            ):
+                reviewed += 1
+
+        plural = "output" if reviewed == 1 else "outputs"
+        return admin_project_page(
+            project_id=project_id,
+            message=f"Rejected {reviewed} pending {plural}.",
+        )
 
     @app.post(
         "/admin/projects/{project_id}/jobs/{job_id}/outputs/{variant_id}/approve",
