@@ -279,6 +279,22 @@ class ProjectJobBatchAlert(BaseModel):
     count: int = 0
 
 
+class ProjectJobBatchAlertRecord(ProjectJobBatchAlert):
+    id: str
+    project_id: str
+    batch_id: str
+    last_seen_at: str
+    delivered_at: str | None = None
+    delivery_attempted_at: str | None = None
+    delivery_error: str | None = None
+    acknowledged_at: str | None = None
+    acknowledged_by: str | None = None
+    muted_until: str | None = None
+    resolved_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
 class ProjectJobBatchReport(BaseModel):
     batch_id: str
     project_id: str

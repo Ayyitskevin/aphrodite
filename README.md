@@ -52,8 +52,8 @@ the job detail page or a project dashboard. Only approved outputs are available 
 the single-output export link, job ZIP export, or project ZIP export. Project dashboards
 also include bulk approve/reject actions for all pending outputs in that project, saved
 import history, retry controls for failed project or batch jobs, and batch-level
-alerts/reporting for spend, throughput, approval rate, categorized failures, and
-status CSV/JSON exports.
+alerts/reporting for spend, throughput, approval rate, categorized failures,
+acknowledgement/muting, webhook delivery, and status CSV/JSON exports.
 
 Upload a source product image:
 
@@ -201,6 +201,9 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_HOST` | `127.0.0.1` | Host used by the `aphrodite-api` script. |
 | `APHRODITE_PORT` | `8020` | Port used by the `aphrodite-api` script. |
 | `APHRODITE_RELOAD` | `false` | Enables uvicorn reload for local development. |
+| `APHRODITE_ALERT_WEBHOOK_URL` | unset | Optional webhook for outbound critical batch alerts. |
+| `APHRODITE_ALERT_WEBHOOK_TOKEN` | unset | Optional bearer token for the alert webhook. |
+| `APHRODITE_ALERT_TIMEOUT_SECONDS` | `10` | Alert webhook request timeout. |
 | `APHRODITE_WORKER_API_URL` | `http://127.0.0.1:8020` | API base URL used by `aphrodite-worker`. |
 | `APHRODITE_WORKER_ID` | host-derived | Worker identity used when claiming jobs. |
 | `APHRODITE_WORKER_BACKEND` | `local_stub` | Renderer backend used by the worker CLI (`local_stub` or `xai`). |
@@ -221,4 +224,4 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 
 ## Next build targets
 
-- Add outbound notification delivery for critical batch alerts.
+- Add scheduled alert digest and historical alert filtering.

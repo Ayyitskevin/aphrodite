@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import uuid
@@ -32,6 +33,7 @@ from aphrodite.admin import (
     render_admin_project_batch_detail,
     render_admin_project_detail,
 )
+from aphrodite.alerts import process_project_job_batch_alerts
 from aphrodite.assets import (
     AssetStorageError,
     AssetValidationError,
@@ -84,6 +86,8 @@ from aphrodite.store import (
     OutputVariantNotFoundError,
     ProjectNotFoundError,
 )
+
+LOG = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None, store: JobStore | None = None) -> FastAPI:
@@ -174,6 +178,25 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             )
         return batch
 
+    def process_project_batch_alerts(*, project_id: str, batch_id: str) -> None:
+        try:
+            process_project_job_batch_alerts(
+                store=store,
+                settings=settings,
+                project_id=project_id,
+                batch_id=batch_id,
+            )
+        except Exception:
+            LOG.exception(
+                "failed to process project job batch alerts",
+                extra={"project_id": project_id, "batch_id": batch_id},
+            )
+
+    def process_job_batch_alerts(job: JobRecord) -> None:
+        if job.project_id is None or job.batch_id is None:
+            return
+        process_project_batch_alerts(project_id=job.project_id, batch_id=job.batch_id)
+
     def project_pending_outputs(project_id: str) -> list[tuple[JobRecord, JobOutputRecord]]:
         jobs = store.list_jobs(project_id=project_id, limit=100)
         return [
@@ -216,11 +239,16 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         project = project_or_404(project_id)
         batch = project_batch_or_404(project_id, batch_id)
         spend = _xai_spend_summary(settings.media_root)
+        alert_records = store.list_project_job_batch_alerts(
+            project_id=project_id,
+            batch_id=batch_id,
+        )
         return HTMLResponse(
             render_admin_project_batch_detail(
                 project=project,
                 batch=batch,
                 spend=spend,
+                alert_records=alert_records,
                 message=message,
             ),
             status_code=status_code,
@@ -424,6 +452,8 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     def admin_project_retry_failed_jobs(project_id: str) -> HTMLResponse:
         project_or_404(project_id)
         retried = store.retry_failed_jobs(project_id=project_id)
+        for batch in store.list_project_job_batches(project_id=project_id, limit=100):
+            process_project_batch_alerts(project_id=project_id, batch_id=batch.id)
         plural = "job" if retried == 1 else "jobs"
         return admin_project_page(
             project_id=project_id,
@@ -439,6 +469,57 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         return admin_project_batch_page(project_id=project_id, batch_id=batch_id)
 
     @app.post(
+        "/admin/projects/{project_id}/batches/{batch_id}/alerts/{alert_id}/acknowledge",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_acknowledge_batch_alert(
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+    ) -> HTMLResponse:
+        project_batch_or_404(project_id, batch_id)
+        record = store.acknowledge_project_job_batch_alert(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+            acknowledged_by="operator",
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="alert not found")
+        return admin_project_batch_page(
+            project_id=project_id,
+            batch_id=batch_id,
+            message="Acknowledged alert.",
+        )
+
+    @app.post(
+        "/admin/projects/{project_id}/batches/{batch_id}/alerts/{alert_id}/mute",
+        response_class=HTMLResponse,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def admin_mute_batch_alert(
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+        hours: Annotated[int, Form(ge=1, le=720)] = 24,
+    ) -> HTMLResponse:
+        project_batch_or_404(project_id, batch_id)
+        record = store.mute_project_job_batch_alert(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+            hours=hours,
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="alert not found")
+        return admin_project_batch_page(
+            project_id=project_id,
+            batch_id=batch_id,
+            message="Muted alert.",
+        )
+
+    @app.post(
         "/admin/projects/{project_id}/batches/{batch_id}/retry-failed",
         response_class=HTMLResponse,
         dependencies=[Depends(require_api_auth)],
@@ -446,6 +527,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
     def admin_project_batch_retry_failed_jobs(project_id: str, batch_id: str) -> HTMLResponse:
         project_batch_or_404(project_id, batch_id)
         retried = store.retry_failed_jobs(project_id=project_id, batch_id=batch_id)
+        process_project_batch_alerts(project_id=project_id, batch_id=batch_id)
         plural = "job" if retried == 1 else "jobs"
         return admin_project_batch_page(
             project_id=project_id,
@@ -1033,6 +1115,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         )
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        process_job_batch_alerts(job)
         return job
 
     @app.post(
@@ -1101,6 +1184,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
                 status_code=status.HTTP_409_CONFLICT,
                 detail="job claim is not active",
             )
+        process_job_batch_alerts(job)
         return job
 
     return app

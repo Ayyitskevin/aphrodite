@@ -14,6 +14,7 @@ from aphrodite.domain import (
     JobRecord,
     JobStatus,
     OutputReviewStatus,
+    ProjectJobBatchAlertRecord,
     ProjectJobBatchRecord,
     ProjectRecord,
 )
@@ -159,6 +160,7 @@ def render_admin_project_batch_detail(
     project: ProjectRecord,
     batch: ProjectJobBatchRecord,
     spend: XAISpendSummary,
+    alert_records: list[ProjectJobBatchAlertRecord] | None = None,
     message: str | None = None,
 ) -> str:
     message_banner = ""
@@ -168,7 +170,7 @@ def render_admin_project_batch_detail(
     job_rows = "\n".join(_batch_job_row(job) for job in batch.jobs)
     if not job_rows:
         job_rows = '<tr><td colspan="8" class="muted">No jobs in this batch.</td></tr>'
-    alert_panel = _batch_alert_panel(report)
+    alert_panel = _batch_alert_panel(project=project, batch=batch, report=report, alert_records=alert_records or [])
     retry_action = _batch_retry_action(project=project, batch=batch)
     report_links = _batch_report_links(project=project, batch=batch)
     return _page(
@@ -769,7 +771,31 @@ def _project_batch_row(
     """
 
 
-def _batch_alert_panel(report) -> str:
+def _batch_alert_summary(report) -> str:
+    if not report.alerts:
+        return '<span class="muted">None</span>'
+    critical = sum(1 for alert in report.alerts if alert.level == "critical")
+    warnings = sum(1 for alert in report.alerts if alert.level == "warning")
+    parts = []
+    if critical:
+        parts.append(f'<span class="status status-failed">{critical} critical</span>')
+    if warnings:
+        parts.append(f'<span class="status status-queued">{warnings} warning</span>')
+    return " ".join(parts)
+
+
+def _batch_alert_panel(
+    *,
+    project: ProjectRecord,
+    batch: ProjectJobBatchRecord,
+    report,
+    alert_records: list[ProjectJobBatchAlertRecord],
+) -> str:
+    if alert_records:
+        return "\n".join(
+            _batch_alert_record_panel(project=project, batch=batch, alert=alert)
+            for alert in alert_records
+        )
     if not report.alerts:
         return '<p class="muted">No batch alerts.</p>'
     return "\n".join(
@@ -783,13 +809,47 @@ def _batch_alert_panel(report) -> str:
     )
 
 
-def _batch_alert_summary(report) -> str:
-    if not report.alerts:
-        return '<span class="muted">None</span>'
-    return " ".join(
-        f'<span class="status status-failed">{_h(alert.count)} {_h(alert.level)}</span>'
-        for alert in report.alerts[:2]
-    )
+def _batch_alert_record_panel(
+    *,
+    project: ProjectRecord,
+    batch: ProjectJobBatchRecord,
+    alert: ProjectJobBatchAlertRecord,
+) -> str:
+    return f"""
+    <div class="alert alert-{_h(alert.level)}">
+      <strong>{_h(alert.code.replace("_", " "))}</strong>
+      <small>{_h(alert.message)}</small>
+      {_batch_alert_record_status(alert)}
+      <div class="actions-row">
+        <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/acknowledge">
+          <button type="submit">Acknowledge</button>
+        </form>
+        <form method="post" action="/admin/projects/{_u(project.id)}/batches/{_u(batch.id)}/alerts/{_u(alert.id)}/mute">
+          <input type="number" name="hours" min="1" max="720" value="24" aria-label="Mute hours">
+          <button type="submit">Mute</button>
+        </form>
+      </div>
+    </div>
+    """
+
+
+def _batch_alert_record_status(alert: ProjectJobBatchAlertRecord) -> str:
+    states = []
+    if alert.resolved_at:
+        states.append(f"Resolved at {alert.resolved_at}")
+    if alert.acknowledged_at:
+        states.append(f"Acknowledged by {alert.acknowledged_by or 'operator'} at {alert.acknowledged_at}")
+    if alert.muted_until:
+        states.append(f"Muted until {alert.muted_until}")
+    if alert.delivered_at:
+        states.append(f"Delivered at {alert.delivered_at}")
+    elif alert.delivery_error:
+        states.append(f"Delivery error: {alert.delivery_error}")
+    elif alert.delivery_attempted_at:
+        states.append(f"Delivery attempted at {alert.delivery_attempted_at}")
+    else:
+        states.append("Not delivered")
+    return f'<small>{" | ".join(_h(state) for state in states)}</small>'
 
 
 def _batch_report_links(*, project: ProjectRecord, batch: ProjectJobBatchRecord) -> str:

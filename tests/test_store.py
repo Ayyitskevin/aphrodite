@@ -116,6 +116,7 @@ def test_store_migrates_foundation_jobs_table(tmp_path: Path) -> None:
     assert "batch_id" in columns
     assert "failure_category" in columns
     assert "project_job_batches" in tables
+    assert "project_job_batch_alerts" in tables
 
 
 def test_store_migrates_output_review_columns(tmp_path: Path) -> None:

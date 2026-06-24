@@ -23,6 +23,16 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     service_name: str = "aphrodite"
@@ -35,6 +45,9 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8020
     reload: bool = False
+    alert_webhook_url: str | None = None
+    alert_webhook_token: str | None = None
+    alert_timeout_seconds: float = 10.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -48,4 +61,10 @@ class Settings:
             host=os.getenv("APHRODITE_HOST", cls.host),
             port=_env_int("APHRODITE_PORT", cls.port),
             reload=_env_bool("APHRODITE_RELOAD", cls.reload),
+            alert_webhook_url=os.getenv("APHRODITE_ALERT_WEBHOOK_URL") or None,
+            alert_webhook_token=os.getenv("APHRODITE_ALERT_WEBHOOK_TOKEN") or None,
+            alert_timeout_seconds=_env_float(
+                "APHRODITE_ALERT_TIMEOUT_SECONDS",
+                cls.alert_timeout_seconds,
+            ),
         )

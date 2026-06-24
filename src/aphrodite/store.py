@@ -25,6 +25,8 @@ from aphrodite.domain import (
     OutputVariant,
     ProductInput,
     ProjectCreate,
+    ProjectJobBatchAlert,
+    ProjectJobBatchAlertRecord,
     ProjectJobBatchCreate,
     ProjectJobBatchRecord,
     ProjectRecord,
@@ -144,6 +146,32 @@ CREATE TABLE IF NOT EXISTS job_outputs (
 
 CREATE INDEX IF NOT EXISTS idx_job_outputs_job
   ON job_outputs(job_id);
+
+CREATE TABLE IF NOT EXISTS project_job_batch_alerts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  batch_id TEXT NOT NULL,
+  level TEXT NOT NULL,
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  delivered_at TEXT,
+  delivery_attempted_at TEXT,
+  delivery_error TEXT,
+  acknowledged_at TEXT,
+  acknowledged_by TEXT,
+  muted_until TEXT,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(batch_id, code),
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(batch_id) REFERENCES project_job_batches(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_job_batch_alerts_batch
+  ON project_job_batch_alerts(project_id, batch_id, level);
 """
 
 
@@ -976,6 +1004,223 @@ class JobStore:
 
         return self.get_job(job_id)
 
+    def upsert_project_job_batch_alerts(
+        self,
+        *,
+        project_id: str,
+        batch_id: str,
+        alerts: list[ProjectJobBatchAlert],
+    ) -> list[ProjectJobBatchAlertRecord]:
+        now = _utc_now()
+        active_codes = [alert.code for alert in alerts]
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for alert in alerts:
+                alert_id = str(uuid.uuid4())
+                conn.execute(
+                    """
+                    INSERT INTO project_job_batch_alerts (
+                      id, project_id, batch_id, level, code, message, count,
+                      last_seen_at, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(batch_id, code) DO UPDATE SET
+                      level = excluded.level,
+                      message = excluded.message,
+                      count = excluded.count,
+                      last_seen_at = excluded.last_seen_at,
+                      delivered_at = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.delivered_at
+                      END,
+                      delivery_attempted_at = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.delivery_attempted_at
+                      END,
+                      delivery_error = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.delivery_error
+                      END,
+                      acknowledged_at = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.acknowledged_at
+                      END,
+                      acknowledged_by = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.acknowledged_by
+                      END,
+                      muted_until = CASE
+                        WHEN project_job_batch_alerts.resolved_at IS NOT NULL THEN NULL
+                        ELSE project_job_batch_alerts.muted_until
+                      END,
+                      resolved_at = NULL,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        alert_id,
+                        project_id,
+                        batch_id,
+                        alert.level,
+                        alert.code,
+                        alert.message,
+                        alert.count,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+            if active_codes:
+                placeholders = ", ".join("?" for _ in active_codes)
+                conn.execute(
+                    f"""
+                    UPDATE project_job_batch_alerts
+                       SET resolved_at = ?,
+                           updated_at = ?
+                     WHERE project_id = ?
+                       AND batch_id = ?
+                       AND resolved_at IS NULL
+                       AND code NOT IN ({placeholders})
+                    """,
+                    (now, now, project_id, batch_id, *active_codes),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE project_job_batch_alerts
+                       SET resolved_at = ?,
+                           updated_at = ?
+                     WHERE project_id = ?
+                       AND batch_id = ?
+                       AND resolved_at IS NULL
+                    """,
+                    (now, now, project_id, batch_id),
+                )
+        return self.list_project_job_batch_alerts(project_id=project_id, batch_id=batch_id)
+
+    def list_project_job_batch_alerts(
+        self,
+        *,
+        project_id: str,
+        batch_id: str,
+        include_resolved: bool = False,
+    ) -> list[ProjectJobBatchAlertRecord]:
+        resolved_filter = "" if include_resolved else "AND resolved_at IS NULL"
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                  FROM project_job_batch_alerts
+                 WHERE project_id = ? AND batch_id = ? {resolved_filter}
+                 ORDER BY CASE level WHEN 'critical' THEN 0 ELSE 1 END, created_at ASC
+                """,
+                (project_id, batch_id),
+            ).fetchall()
+        return [self._row_to_project_job_batch_alert(row) for row in rows]
+
+    def acknowledge_project_job_batch_alert(
+        self,
+        *,
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+        acknowledged_by: str = "operator",
+    ) -> ProjectJobBatchAlertRecord | None:
+        now = _utc_now()
+        actor = acknowledged_by.strip() if acknowledged_by.strip() else "operator"
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE project_job_batch_alerts
+                   SET acknowledged_at = ?,
+                       acknowledged_by = ?,
+                       updated_at = ?
+                 WHERE id = ? AND project_id = ? AND batch_id = ?
+                """,
+                (now, actor, now, alert_id, project_id, batch_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_project_job_batch_alert(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+        )
+
+    def mute_project_job_batch_alert(
+        self,
+        *,
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+        hours: int = 24,
+    ) -> ProjectJobBatchAlertRecord | None:
+        now = _utc_now()
+        muted_until = _utc_from_now(max(1, min(hours, 720)) * 3600)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE project_job_batch_alerts
+                   SET muted_until = ?,
+                       updated_at = ?
+                 WHERE id = ? AND project_id = ? AND batch_id = ?
+                """,
+                (muted_until, now, alert_id, project_id, batch_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_project_job_batch_alert(
+            project_id=project_id,
+            batch_id=batch_id,
+            alert_id=alert_id,
+        )
+
+    def get_project_job_batch_alert(
+        self,
+        *,
+        project_id: str,
+        batch_id: str,
+        alert_id: str,
+    ) -> ProjectJobBatchAlertRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM project_job_batch_alerts
+                 WHERE id = ? AND project_id = ? AND batch_id = ?
+                """,
+                (alert_id, project_id, batch_id),
+            ).fetchone()
+        return self._row_to_project_job_batch_alert(row) if row is not None else None
+
+    def mark_project_job_batch_alert_delivery(
+        self,
+        *,
+        alert_id: str,
+        delivered: bool,
+        error: str | None,
+    ) -> ProjectJobBatchAlertRecord | None:
+        now = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE project_job_batch_alerts
+                   SET delivery_attempted_at = ?,
+                       delivered_at = ?,
+                       delivery_error = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (now, now if delivered else None, error, now, alert_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM project_job_batch_alerts WHERE id = ?",
+                (alert_id,),
+            ).fetchone()
+        return self._row_to_project_job_batch_alert(row) if row is not None else None
+
+
     def retry_failed_jobs(
         self,
         *,
@@ -1067,6 +1312,40 @@ class JobStore:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_job_outputs_review ON job_outputs(review_status)"
+        )
+        alert_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(project_job_batch_alerts)").fetchall()
+        }
+        if "resolved_at" not in alert_columns:
+            conn.execute("ALTER TABLE project_job_batch_alerts ADD COLUMN resolved_at TEXT")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_project_job_batch_alerts_batch
+              ON project_job_batch_alerts(project_id, batch_id, level)
+            """
+        )
+
+    @staticmethod
+    def _row_to_project_job_batch_alert(row: sqlite3.Row) -> ProjectJobBatchAlertRecord:
+        return ProjectJobBatchAlertRecord(
+            id=row["id"],
+            project_id=row["project_id"],
+            batch_id=row["batch_id"],
+            level=row["level"],
+            code=row["code"],
+            message=row["message"],
+            count=row["count"],
+            last_seen_at=row["last_seen_at"],
+            delivered_at=row["delivered_at"],
+            delivery_attempted_at=row["delivery_attempted_at"],
+            delivery_error=row["delivery_error"],
+            acknowledged_at=row["acknowledged_at"],
+            acknowledged_by=row["acknowledged_by"],
+            muted_until=row["muted_until"],
+            resolved_at=row["resolved_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     @staticmethod
