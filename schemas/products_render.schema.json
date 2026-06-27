@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mise.studio/schemas/products_render.schema.json",
+  "title": "Aphrodite products render result",
+  "description": "Canonical Mise-facing worker output contract. Aphrodite emits this envelope (read-only) at GET /v1/jobs/{job_id}/renders. Mise sums cost_usd against its hard spend cap and persists provenance. One entry per produced render; a failed render produces no entry, so it contributes no cost.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["renders"],
+  "properties": {
+    "renders": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/render" }
+    }
+  },
+  "$defs": {
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_asset_id", "kind", "spec", "output_path", "cost_usd"],
+      "properties": {
+        "source_asset_id": {
+          "description": "Opaque source asset id, or null. (The contract sketches an int; Aphrodite uses string ids and Mise maps them.)",
+          "type": ["string", "null"]
+        },
+        "kind": {
+          "description": "The render kind / marketplace target.",
+          "type": "string",
+          "minLength": 1
+        },
+        "spec": {
+          "description": "The render spec: an object of variant dimensions, or a string identifier.",
+          "type": ["object", "string"]
+        },
+        "output_path": {
+          "description": "Storage path of the produced artifact, or null when no artifact exists.",
+          "type": ["string", "null"]
+        },
+        "cost_usd": {
+          "description": "Real per-render spend in USD. Never negative; 0 for a free backend.",
+          "type": "number",
+          "minimum": 0
+        },
+        "model": {
+          "description": "Render model / backend that produced the output.",
+          "type": ["string", "null"]
+        },
+        "latency_ms": {
+          "description": "Render latency in milliseconds.",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "review_status": {
+          "description": "Explicit-commit review state; never auto-published.",
+          "type": ["string", "null"],
+          "enum": ["pending_review", "approved", "rejected", null]
+        },
+        "rights_confirmed": {
+          "description": "Whether a human confirmed rights/consent for this render.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
