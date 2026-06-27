@@ -25,8 +25,15 @@ class RenderedOutput:
     sha256: str
     width: int
     height: int
+    # Real per-render spend + provenance the worker forwards to the API so Mise
+    # can sum cost_usd against its hard cap. Defaulted so a backend that does not
+    # cost anything (local_stub) or predates the contract still constructs.
+    cost_usd: float = 0.0
+    cost_ticks: int | None = None
+    model: str = "unknown"
+    latency_ms: int | None = None
 
-    def as_worker_payload(self, *, claim_token: str) -> dict[str, str | int]:
+    def as_worker_payload(self, *, claim_token: str) -> dict[str, str | int | float | None]:
         return {
             "claim_token": claim_token,
             "variant_id": self.variant_id,
@@ -36,6 +43,10 @@ class RenderedOutput:
             "sha256": self.sha256,
             "width": self.width,
             "height": self.height,
+            "cost_usd": self.cost_usd,
+            "cost_ticks": self.cost_ticks,
+            "model": self.model,
+            "latency_ms": self.latency_ms,
         }
 
 
@@ -74,6 +85,13 @@ class LocalStubRendererBackend:
             sha256=stored.sha256,
             width=variant.width,
             height=variant.height,
+            # The stub spends no money and does no remote call; report the zero
+            # cost and a fixed 0ms latency explicitly so they are recorded facts
+            # rather than missing fields, and so stub output stays deterministic.
+            cost_usd=0.0,
+            cost_ticks=0,
+            model=self.name,
+            latency_ms=0,
         )
 
 

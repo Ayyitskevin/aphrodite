@@ -167,11 +167,13 @@ class XAIImageRendererBackend:
     def render(self, *, job: JobRecord, variant: OutputVariant) -> RenderedOutput:
         self.cost_guard.assert_can_start(job=job, variant=variant)
         source_image = self._source_image_payload(job)
+        started = time.monotonic()
         response = self.client.render_image(
             prompt=_prompt_for(job=job, variant=variant, has_source=source_image is not None),
             aspect_ratio=_aspect_ratio_for(variant),
             source_image=source_image,
         )
+        latency_ms = max(0, int((time.monotonic() - started) * 1000))
         self.cost_guard.record_spend(job=job, variant=variant, cost_ticks=response.cost_ticks)
 
         content_type, extension, width, height = _decode_output_image(
@@ -196,6 +198,13 @@ class XAIImageRendererBackend:
             sha256=stored.sha256,
             width=width,
             height=height,
+            # Forward the ACTUAL spend reported by xAI (ticks -> USD) plus the
+            # model and call latency so the API and Mise see real cost, not just
+            # the local cost ledger written by the cost guard.
+            cost_usd=response.cost_ticks / TICKS_PER_USD,
+            cost_ticks=response.cost_ticks,
+            model=self.config.model,
+            latency_ms=latency_ms,
         )
 
     def _source_image_payload(self, job: JobRecord) -> dict[str, str] | None:

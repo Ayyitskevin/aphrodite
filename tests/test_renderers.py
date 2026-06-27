@@ -80,3 +80,21 @@ def test_get_renderer_backend_returns_local_stub(tmp_path: Path) -> None:
     backend = get_renderer_backend("local_stub", media_root=str(tmp_path / "media"))
 
     assert backend.name == "local_stub"
+
+
+def test_local_stub_reports_zero_cost_and_provenance(tmp_path: Path) -> None:
+    rendered = LocalStubRendererBackend(media_root=str(tmp_path / "media")).render(
+        job=job(),
+        variant=variant(),
+    )
+
+    assert rendered.cost_usd == 0.0
+    assert rendered.cost_ticks == 0
+    assert rendered.model == "local_stub"
+    assert rendered.latency_ms == 0
+
+    payload = rendered.as_worker_payload(claim_token="token")
+    assert payload["cost_usd"] == 0.0
+    assert payload["cost_ticks"] == 0
+    assert payload["model"] == "local_stub"
+    assert payload["latency_ms"] == 0

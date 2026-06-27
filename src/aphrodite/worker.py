@@ -76,7 +76,7 @@ class WorkerApi(Protocol):
         self,
         *,
         job_id: str,
-        output_payload: dict[str, str | int],
+        output_payload: dict[str, Any],
     ) -> dict[str, Any]:
         ...
 
@@ -140,7 +140,7 @@ class HttpWorkerApiClient:
         self,
         *,
         job_id: str,
-        output_payload: dict[str, str | int],
+        output_payload: dict[str, Any],
     ) -> dict[str, Any]:
         payload = self._post_json(f"/v1/worker/jobs/{job_id}/outputs", output_payload)
         if not isinstance(payload, dict):

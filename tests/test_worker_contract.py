@@ -1,6 +1,9 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from aphrodite.domain import (
     JobCreate,
     JobFailureCategory,
@@ -207,6 +210,135 @@ def test_fail_claimed_job_marks_job_failed(tmp_path: Path) -> None:
     assert failed.error == "renderer crashed"
     assert failed.failure_category == JobFailureCategory.RENDERER_ERROR
     assert failed.claimed_by is None
+
+
+def test_complete_output_persists_cost_and_provenance(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    store.create_job(job_request())
+    claim = store.claim_next_job(worker_id="renderer")
+    assert claim is not None
+
+    persisted = store.complete_job_output(
+        job_id=claim.job.id,
+        output=JobOutputCreate(
+            claim_token=claim.claim_token,
+            variant_id="catalog_square",
+            storage_path="outputs/catalog_square.jpg",
+            content_type="image/jpeg",
+            bytes=1024,
+            sha256="a" * 64,
+            width=2000,
+            height=2000,
+            cost_usd=0.02,
+            cost_ticks=200_000_000,
+            model="grok-imagine-image-quality",
+            latency_ms=1234,
+        ),
+    )
+
+    assert persisted is not None
+    assert persisted.cost_usd == 0.02
+    assert persisted.cost_ticks == 200_000_000
+    assert persisted.model == "grok-imagine-image-quality"
+    assert persisted.latency_ms == 1234
+
+    # Cost + provenance round-trip through a full job read.
+    job = store.get_job(claim.job.id)
+    assert job is not None
+    assert job.outputs[0].cost_usd == 0.02
+    assert job.outputs[0].model == "grok-imagine-image-quality"
+
+
+def test_output_payload_defaults_cost_for_legacy_workers() -> None:
+    # A worker that predates the cost contract omits the cost fields entirely;
+    # the payload must still validate with a safe zero default so older workers
+    # remain compatible.
+    output = JobOutputCreate(
+        claim_token="token",
+        variant_id="catalog_square",
+        storage_path="outputs/catalog_square.jpg",
+        content_type="image/jpeg",
+        bytes=1024,
+        sha256="a" * 64,
+        width=2000,
+        height=2000,
+    )
+
+    assert output.cost_usd == 0.0
+    assert output.cost_ticks is None
+    assert output.model is None
+    assert output.latency_ms is None
+
+
+def test_negative_cost_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        JobOutputCreate(
+            claim_token="token",
+            variant_id="catalog_square",
+            storage_path="outputs/catalog_square.jpg",
+            content_type="image/jpeg",
+            bytes=1024,
+            sha256="a" * 64,
+            width=2000,
+            height=2000,
+            cost_usd=-0.01,
+        )
+
+
+def test_migration_adds_cost_columns_to_legacy_outputs(tmp_path: Path) -> None:
+    db_path = tmp_path / "aphrodite.db"
+    # Build a pre-cost-contract job_outputs table that lacks the cost columns.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE job_outputs (
+              id TEXT PRIMARY KEY,
+              job_id TEXT NOT NULL,
+              variant_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              storage_path TEXT NOT NULL,
+              content_type TEXT NOT NULL,
+              bytes INTEGER NOT NULL,
+              sha256 TEXT NOT NULL,
+              width INTEGER NOT NULL,
+              height INTEGER NOT NULL,
+              error TEXT,
+              review_status TEXT NOT NULL DEFAULT 'pending_review',
+              review_note TEXT,
+              reviewed_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(job_id, variant_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO job_outputs (
+              id, job_id, variant_id, status, storage_path, content_type,
+              bytes, sha256, width, height, created_at, updated_at
+            )
+            VALUES (
+              'output-1', 'job-1', 'catalog_square', 'completed',
+              'outputs/catalog_square.jpg', 'image/jpeg', 10, ?, 2000, 2000,
+              '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            )
+            """,
+            ("a" * 64,),
+        )
+
+    JobStore(str(db_path)).initialize()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(job_outputs)")}
+        legacy = conn.execute("SELECT * FROM job_outputs").fetchone()
+
+    assert {"cost_usd", "cost_ticks", "model", "latency_ms"} <= columns
+    # The pre-existing row backfills to a recorded zero cost, never NULL.
+    assert legacy["cost_usd"] == 0
+    assert legacy["model"] is None
 
 
 def test_fail_claimed_job_persists_supplied_failure_category(tmp_path: Path) -> None:

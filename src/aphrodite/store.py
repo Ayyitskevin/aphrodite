@@ -134,6 +134,10 @@ CREATE TABLE IF NOT EXISTS job_outputs (
   sha256 TEXT NOT NULL,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
+  cost_usd REAL NOT NULL DEFAULT 0,
+  cost_ticks INTEGER,
+  model TEXT,
+  latency_ms INTEGER,
   error TEXT,
   review_status TEXT NOT NULL DEFAULT 'pending_review',
   review_note TEXT,
@@ -821,10 +825,11 @@ class JobStore:
                 """
                 INSERT INTO job_outputs (
                   id, job_id, variant_id, status, storage_path, content_type,
-                  bytes, sha256, width, height, error, review_status,
+                  bytes, sha256, width, height, cost_usd, cost_ticks, model,
+                  latency_ms, error, review_status,
                   review_note, reviewed_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id, variant_id) DO UPDATE SET
                   status = excluded.status,
                   storage_path = excluded.storage_path,
@@ -833,6 +838,10 @@ class JobStore:
                   sha256 = excluded.sha256,
                   width = excluded.width,
                   height = excluded.height,
+                  cost_usd = excluded.cost_usd,
+                  cost_ticks = excluded.cost_ticks,
+                  model = excluded.model,
+                  latency_ms = excluded.latency_ms,
                   error = excluded.error,
                   review_status = excluded.review_status,
                   review_note = excluded.review_note,
@@ -850,6 +859,10 @@ class JobStore:
                     output.sha256,
                     output.width,
                     output.height,
+                    output.cost_usd,
+                    output.cost_ticks,
+                    output.model,
+                    output.latency_ms,
                     None,
                     OutputReviewStatus.PENDING_REVIEW.value,
                     None,
@@ -1369,6 +1382,10 @@ class JobStore:
             "review_status": "TEXT NOT NULL DEFAULT 'pending_review'",
             "review_note": "TEXT",
             "reviewed_at": "TEXT",
+            "cost_usd": "REAL NOT NULL DEFAULT 0",
+            "cost_ticks": "INTEGER",
+            "model": "TEXT",
+            "latency_ms": "INTEGER",
         }.items():
             if column not in output_columns:
                 conn.execute(f"ALTER TABLE job_outputs ADD COLUMN {column} {definition}")
@@ -1480,6 +1497,10 @@ class JobStore:
             sha256=row["sha256"],
             width=row["width"],
             height=row["height"],
+            cost_usd=row["cost_usd"] if row["cost_usd"] is not None else 0.0,
+            cost_ticks=row["cost_ticks"],
+            model=row["model"],
+            latency_ms=row["latency_ms"],
             error=row["error"],
             review_status=OutputReviewStatus(row["review_status"]),
             review_note=row["review_note"],
