@@ -314,6 +314,20 @@ def test_xai_renderer_releases_reservation_when_call_fails(tmp_path: Path) -> No
     assert _ledger_total_ticks(ledger) == 0
 
 
+def test_guard_refuses_when_estimate_exceeds_per_image_limit(tmp_path: Path) -> None:
+    guard = XAIImageCostGuard(
+        config(
+            tmp_path,
+            cost_ledger_path=str(tmp_path / "costs.jsonl"),
+            estimated_image_cost_ticks=500_000_000,
+            max_image_cost_ticks=100_000_000,
+        )
+    )
+
+    with pytest.raises(RendererError, match="per-image limit"):
+        guard.assert_can_start(job=job(tmp_path, with_asset=False), variant=variant())
+
+
 def test_unsettled_reservation_blocks_a_concurrent_over_budget_render(tmp_path: Path) -> None:
     ledger = tmp_path / "costs.jsonl"
     guard = XAIImageCostGuard(
