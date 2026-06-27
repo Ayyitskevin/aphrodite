@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -328,6 +328,29 @@ class ProjectJobBatchReport(BaseModel):
     alerts: list[ProjectJobBatchAlert] = Field(default_factory=list)
 
 
+class RenderResult(BaseModel):
+    """One render projected into the Mise worker-contract shape.
+
+    Mise consumes a strict ``{"renders": [...]}`` envelope to enforce its spend
+    cap and persist provenance. ``source_asset_id`` is sketched as an int in the
+    contract, but Aphrodite uses opaque string asset ids; the real id (or null)
+    is emitted as-is for Mise to map.
+    """
+
+    source_asset_id: str | None = None
+    kind: str
+    spec: dict[str, Any] | str
+    output_path: str | None = None
+    cost_usd: float = Field(ge=0)
+    model: str | None = None
+    latency_ms: int | None = None
+    review_status: OutputReviewStatus | None = None
+
+
+class RenderResultEnvelope(BaseModel):
+    renders: list[RenderResult] = Field(default_factory=list)
+
+
 class JobStatusUpdate(BaseModel):
     status: JobStatus
     error: str | None = Field(default=None, max_length=2000)
@@ -423,3 +446,44 @@ def build_output_plan(request: JobCreate) -> list[OutputVariant]:
             )
 
     return variants
+
+
+def _variant_spec(variant: OutputVariant) -> dict[str, Any]:
+    return {
+        "variant_id": variant.id,
+        "target_id": variant.target_id,
+        "label": variant.label,
+        "width": variant.width,
+        "height": variant.height,
+        "aspect_ratio": variant.aspect_ratio,
+        "output_format": variant.output_format,
+        "background": variant.background,
+        "safe_margin_percent": variant.safe_margin_percent,
+    }
+
+
+def build_render_results(job: JobRecord) -> RenderResultEnvelope:
+    """Project a job's persisted outputs into the Mise renders-JSON envelope.
+
+    One render entry per produced output, carrying the real per-render cost so
+    Mise can sum it against its hard cap. Read-only: this never mutates state and
+    never publishes anything.
+    """
+
+    variants_by_id = {variant.id: variant for variant in job.output_plan}
+    renders: list[RenderResult] = []
+    for output in job.outputs:
+        variant = variants_by_id.get(output.variant_id)
+        renders.append(
+            RenderResult(
+                source_asset_id=job.source_asset_id,
+                kind=variant.target_id if variant is not None else output.variant_id,
+                spec=_variant_spec(variant) if variant is not None else output.variant_id,
+                output_path=output.storage_path,
+                cost_usd=output.cost_usd,
+                model=output.model,
+                latency_ms=output.latency_ms,
+                review_status=output.review_status,
+            )
+        )
+    return RenderResultEnvelope(renders=renders)

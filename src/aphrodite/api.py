@@ -69,9 +69,11 @@ from aphrodite.domain import (
     ProjectJobBatchRecord,
     ProjectJobBatchReport,
     ProjectRecord,
+    RenderResultEnvelope,
     WorkerClaimRefreshRequest,
     WorkerClaimRequest,
     WorkerJobClaim,
+    build_render_results,
 )
 from aphrodite.marketplaces import list_marketplace_specs
 from aphrodite.reporting import (
@@ -1178,6 +1180,15 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
         return job
+
+    @app.get("/v1/jobs/{job_id}/renders", response_model=RenderResultEnvelope)
+    def get_job_renders(job_id: str) -> RenderResultEnvelope:
+        # Read-only Mise-facing projection: the strict renders-JSON envelope with
+        # real per-render cost_usd. Never mutates state and never publishes.
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        return build_render_results(job)
 
     @app.patch(
         "/v1/jobs/{job_id}/status",
