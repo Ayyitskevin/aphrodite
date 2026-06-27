@@ -208,6 +208,14 @@ class JobOutputRecord(BaseModel):
     sha256: str
     width: int
     height: int
+    # Real per-render spend + provenance. Mise sums cost_usd against its hard
+    # cap and persists model/latency to its ledger. cost_usd defaults to 0.0 so
+    # outputs created before the cost contract (and the free local_stub backend)
+    # remain valid; cost_ticks/model/latency_ms stay null when unreported.
+    cost_usd: float = Field(default=0.0, ge=0)
+    cost_ticks: int | None = Field(default=None, ge=0)
+    model: str | None = Field(default=None, max_length=200)
+    latency_ms: int | None = Field(default=None, ge=0)
     error: str | None = None
     review_status: OutputReviewStatus = OutputReviewStatus.PENDING_REVIEW
     review_note: str | None = None
@@ -363,6 +371,13 @@ class JobOutputCreate(BaseModel):
     sha256: str = Field(min_length=16, max_length=128)
     width: int = Field(ge=1)
     height: int = Field(ge=1)
+    # The renderer reports the ACTUAL spend (cost_usd, never under-reported) plus
+    # provenance so Mise can enforce its hard spend cap and persist a cost
+    # report. Defaulted so workers that predate the cost contract still validate.
+    cost_usd: float = Field(default=0.0, ge=0)
+    cost_ticks: int | None = Field(default=None, ge=0)
+    model: str | None = Field(default=None, max_length=200)
+    latency_ms: int | None = Field(default=None, ge=0)
 
 
 class JobFailureRequest(BaseModel):

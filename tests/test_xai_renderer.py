@@ -145,6 +145,27 @@ def test_xai_renderer_uses_source_asset_and_writes_output(tmp_path: Path) -> Non
     assert entry["cost_in_usd_ticks"] == 200_000_000
 
 
+def test_xai_renderer_reports_real_cost_and_provenance(tmp_path: Path) -> None:
+    backend = XAIImageRendererBackend(
+        media_root=str(tmp_path / "media"),
+        config=config(tmp_path),
+        client=FakeXAIClient(),
+    )
+
+    rendered = backend.render(job=job(tmp_path), variant=variant())
+
+    # FakeXAIClient bills 200_000_000 ticks; TICKS_PER_USD = 10_000_000_000.
+    assert rendered.cost_ticks == 200_000_000
+    assert rendered.cost_usd == pytest.approx(0.02)
+    assert rendered.model == "grok-imagine-image-quality"
+    assert rendered.latency_ms is not None and rendered.latency_ms >= 0
+
+    payload = rendered.as_worker_payload(claim_token="token")
+    assert payload["cost_usd"] == pytest.approx(0.02)
+    assert payload["cost_ticks"] == 200_000_000
+    assert payload["model"] == "grok-imagine-image-quality"
+
+
 def test_xai_renderer_uses_public_source_url_without_asset(tmp_path: Path) -> None:
     fake_client = FakeXAIClient()
     backend = XAIImageRendererBackend(
