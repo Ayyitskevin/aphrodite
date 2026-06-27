@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -134,6 +136,10 @@ class JobCreate(BaseModel):
     background: BackgroundIntent = Field(default_factory=BackgroundIntent)
     quantity_per_target: int = Field(default=1, ge=1, le=8)
     priority: int = Field(default=5, ge=0, le=10)
+    # Optional caller-supplied request idempotency key. Re-submitting a create
+    # with the same key returns the existing job instead of spawning a second
+    # one, so a Mise retry cannot duplicate renders or double-charge.
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator("marketplace_targets")
     @classmethod
@@ -244,6 +250,7 @@ class JobRecord(BaseModel):
     output_plan: list[OutputVariant]
     outputs: list[JobOutputRecord] = Field(default_factory=list)
     priority: int
+    idempotency_key: str | None = None
     claimed_by: str | None = None
     claimed_at: str | None = None
     claim_expires_at: str | None = None
@@ -478,6 +485,29 @@ def _variant_spec(variant: OutputVariant) -> dict[str, Any]:
         "background": variant.background,
         "safe_margin_percent": variant.safe_margin_percent,
     }
+
+
+def render_request_key(*, job: JobRecord, variant: OutputVariant) -> str:
+    """Deterministic idempotency key for a single render.
+
+    Stable per ``(source_asset_id, spec, request)`` so any retry, re-claim, or
+    re-delivery of the same render — even from a fresh worker process — derives
+    the identical key. The API recognizes the repeat and treats it as an
+    idempotent no-op rather than a second render/charge. A new request (a new
+    job) yields a new key, so intentional regeneration is unaffected.
+    """
+
+    material = json.dumps(
+        {
+            "source_asset_id": job.source_asset_id,
+            "source_image_uri": job.product.source_image_uri,
+            "spec": _variant_spec(variant),
+            "job_id": job.id,
+            "variant_id": variant.id,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def build_render_results(job: JobRecord) -> RenderResultEnvelope:

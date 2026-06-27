@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   payload_json TEXT NOT NULL,
   output_plan_json TEXT NOT NULL,
   priority INTEGER NOT NULL,
+  idempotency_key TEXT,
   claimed_by TEXT,
   claim_token TEXT,
   claimed_at TEXT,
@@ -453,6 +454,14 @@ class JobStore:
         return [self._row_to_project(row) for row in rows]
 
     def create_job(self, request: JobCreate) -> JobRecord:
+        # Idempotent create: re-submitting the same request key returns the
+        # existing job instead of spawning a second one, so a caller (Mise)
+        # retry cannot duplicate renders or double-charge.
+        if request.idempotency_key is not None:
+            existing = self.get_job_by_idempotency_key(request.idempotency_key)
+            if existing is not None:
+                return existing
+
         source_asset = None
         if request.source_asset_id is not None:
             source_asset = self.get_asset(request.source_asset_id)
@@ -479,40 +488,59 @@ class JobStore:
             marketplace_targets=request.marketplace_targets,
             output_plan=output_plan,
             priority=request.priority,
+            idempotency_key=request.idempotency_key,
             created_at=now,
             updated_at=now,
         )
         source_image_uri = request.product.source_image_uri or f"asset://{request.source_asset_id}"
 
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO jobs (
-                  id, status, product_name, product_sku, source_image_uri, source_asset_id,
-                  project_id, batch_id, payload_json, output_plan_json, priority, error,
-                  created_at, updated_at
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO jobs (
+                      id, status, product_name, product_sku, source_image_uri, source_asset_id,
+                      project_id, batch_id, payload_json, output_plan_json, priority,
+                      idempotency_key, error, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job.id,
+                        job.status.value,
+                        request.product.name,
+                        request.product.sku,
+                        source_image_uri,
+                        request.source_asset_id,
+                        request.project_id,
+                        None,
+                        json.dumps(_jsonable(request), sort_keys=True),
+                        json.dumps([_jsonable(variant) for variant in output_plan], sort_keys=True),
+                        request.priority,
+                        request.idempotency_key,
+                        None,
+                        now,
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    job.id,
-                    job.status.value,
-                    request.product.name,
-                    request.product.sku,
-                    source_image_uri,
-                    request.source_asset_id,
-                    request.project_id,
-                    None,
-                    json.dumps(_jsonable(request), sort_keys=True),
-                    json.dumps([_jsonable(variant) for variant in output_plan], sort_keys=True),
-                    request.priority,
-                    None,
-                    now,
-                    now,
-                ),
-            )
+        except sqlite3.IntegrityError:
+            # A concurrent create with the same idempotency key won the race;
+            # return that job rather than failing the retry.
+            if request.idempotency_key is not None:
+                existing = self.get_job_by_idempotency_key(request.idempotency_key)
+                if existing is not None:
+                    return existing
+            raise
 
         return job
+
+    def get_job_by_idempotency_key(self, idempotency_key: str) -> JobRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return self._row_to_job(row) if row is not None else None
 
     def create_project_job_batch(
         self,
@@ -1429,9 +1457,17 @@ class JobStore:
             "project_id": "TEXT",
             "batch_id": "TEXT",
             "failure_category": "TEXT",
+            "idempotency_key": "TEXT",
         }.items():
             if column not in job_columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key
+              ON jobs(idempotency_key) WHERE idempotency_key IS NOT NULL
+            """
+        )
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_source_asset ON jobs(source_asset_id)"
@@ -1612,6 +1648,7 @@ class JobStore:
             output_plan=output_plan,
             outputs=self.list_job_outputs(row["id"]),
             priority=row["priority"],
+            idempotency_key=row["idempotency_key"],
             claimed_by=row["claimed_by"],
             claimed_at=row["claimed_at"],
             claim_expires_at=row["claim_expires_at"],

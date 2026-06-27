@@ -7,14 +7,13 @@ import json
 import os
 import socket
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib import error, request
 
 from pydantic import ValidationError
 
-from aphrodite.domain import JobRecord, OutputVariant, WorkerJobClaim
+from aphrodite.domain import JobRecord, OutputVariant, WorkerJobClaim, render_request_key
 from aphrodite.failures import classify_failure
 from aphrodite.renderers import RendererBackend, RendererError, get_renderer_backend
 
@@ -217,15 +216,16 @@ def process_next_job(
                 claim_ttl_seconds=claim_ttl_seconds,
             )
             rendered = backend.render(job=job, variant=variant)
-            # Stamp each completion so a duplicated delivery (proxy/network
-            # retry) is recognized as the same render attempt and treated as an
-            # idempotent no-op by the API rather than re-charging or resetting
-            # review.
+            # Stamp each completion with a deterministic key derived from
+            # (source asset, spec, request) so any retry, re-claim, or duplicated
+            # delivery of the same render is recognized as the same attempt and
+            # treated as an idempotent no-op by the API rather than re-charging
+            # or resetting review.
             client.complete_output(
                 job_id=job.id,
                 output_payload=rendered.as_worker_payload(
                     claim_token=claim.claim_token,
-                    render_request_id=str(uuid.uuid4()),
+                    render_request_id=render_request_key(job=job, variant=variant),
                 ),
             )
         return True

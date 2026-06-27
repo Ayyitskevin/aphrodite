@@ -147,6 +147,13 @@ curl -s http://127.0.0.1:8020/v1/jobs \
   }'
 ```
 
+Pass an optional `"idempotency_key"` on job creation to make retries safe:
+re-submitting the same key returns the existing job instead of creating a
+second one, so a caller retry cannot duplicate renders or double-charge. Each
+render is also keyed deterministically by `(source asset, spec, request)`, so a
+worker retry, claim recovery, or duplicated completion delivery never
+re-renders or double-charges.
+
 Run the local stub renderer worker:
 
 ```bash
