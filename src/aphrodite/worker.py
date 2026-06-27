@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib import error, request
@@ -216,9 +217,16 @@ def process_next_job(
                 claim_ttl_seconds=claim_ttl_seconds,
             )
             rendered = backend.render(job=job, variant=variant)
+            # Stamp each completion so a duplicated delivery (proxy/network
+            # retry) is recognized as the same render attempt and treated as an
+            # idempotent no-op by the API rather than re-charging or resetting
+            # review.
             client.complete_output(
                 job_id=job.id,
-                output_payload=rendered.as_worker_payload(claim_token=claim.claim_token),
+                output_payload=rendered.as_worker_payload(
+                    claim_token=claim.claim_token,
+                    render_request_id=str(uuid.uuid4()),
+                ),
             )
         return True
     except Exception as exc:

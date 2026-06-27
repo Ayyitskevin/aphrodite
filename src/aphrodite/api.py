@@ -64,14 +64,17 @@ from aphrodite.domain import (
     JobStatus,
     JobStatusUpdate,
     OutputReviewStatus,
+    OutputRightsConfirmation,
     ProjectCreate,
     ProjectJobBatchCreate,
     ProjectJobBatchRecord,
     ProjectJobBatchReport,
     ProjectRecord,
+    RenderResultEnvelope,
     WorkerClaimRefreshRequest,
     WorkerClaimRequest,
     WorkerJobClaim,
+    build_render_results,
 )
 from aphrodite.marketplaces import list_marketplace_specs
 from aphrodite.reporting import (
@@ -723,7 +726,7 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             (job, output)
             for job in jobs
             for output in job.outputs
-            if output.review_status == OutputReviewStatus.APPROVED
+            if _is_exportable(output, require_rights=settings.require_rights_confirmation)
         ]
         if not approved:
             raise HTTPException(
@@ -860,7 +863,9 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
         output = _job_output_or_404(job, variant_id)
-        _require_approved_output(output)
+        _require_exportable_output(
+            output, require_rights=settings.require_rights_confirmation
+        )
         return _media_file_response(
             media_root=settings.media_root,
             relative_path=output.storage_path,
@@ -877,7 +882,9 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
         if job is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
         approved = [
-            output for output in job.outputs if output.review_status == OutputReviewStatus.APPROVED
+            output
+            for output in job.outputs
+            if _is_exportable(output, require_rights=settings.require_rights_confirmation)
         ]
         if not approved:
             raise HTTPException(
@@ -1179,6 +1186,38 @@ def create_app(settings: Settings | None = None, store: JobStore | None = None) 
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
         return job
 
+    @app.get("/v1/jobs/{job_id}/renders", response_model=RenderResultEnvelope)
+    def get_job_renders(job_id: str) -> RenderResultEnvelope:
+        # Read-only Mise-facing projection: the strict renders-JSON envelope with
+        # real per-render cost_usd. Never mutates state and never publishes.
+        job = store.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+        return build_render_results(job)
+
+    @app.post(
+        "/v1/jobs/{job_id}/outputs/{variant_id}/confirm-rights",
+        response_model=JobOutputRecord,
+        dependencies=[Depends(require_api_auth)],
+    )
+    def confirm_output_rights(
+        job_id: str,
+        variant_id: str,
+        payload: OutputRightsConfirmation,
+    ) -> JobOutputRecord:
+        # Explicit human rights/consent confirmation, distinct from quality
+        # approval. When the consent policy is active, export requires this in
+        # addition to approval, so one action can never authorize export alone.
+        output = store.confirm_output_rights(
+            job_id=job_id,
+            variant_id=variant_id,
+            confirmed_by=payload.confirmed_by,
+            license_note=payload.license_note,
+        )
+        if output is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="output not found")
+        return output
+
     @app.patch(
         "/v1/jobs/{job_id}/status",
         response_model=JobRecord,
@@ -1290,11 +1329,24 @@ def _job_output_or_404(job: JobRecord, variant_id: str) -> JobOutputRecord:
     return output
 
 
-def _require_approved_output(output: JobOutputRecord) -> None:
+def _is_exportable(output: JobOutputRecord, *, require_rights: bool) -> bool:
+    if output.review_status != OutputReviewStatus.APPROVED:
+        return False
+    if require_rights and output.rights_confirmed_at is None:
+        return False
+    return True
+
+
+def _require_exportable_output(output: JobOutputRecord, *, require_rights: bool) -> None:
     if output.review_status != OutputReviewStatus.APPROVED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="output is not approved",
+        )
+    if require_rights and output.rights_confirmed_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="output rights are not confirmed",
         )
 
 

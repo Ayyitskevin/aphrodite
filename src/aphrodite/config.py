@@ -47,6 +47,11 @@ class Settings:
     max_image_pixels: int = 50_000_000
     api_token: str | None = None
     worker_token: str | None = None
+    # Consent/licensing policy is an owner activation gate. While off (default),
+    # export requires only quality approval, preserving current behavior. When
+    # on, export additionally requires an explicit human rights/consent
+    # confirmation per output, so a single approval can never authorize export.
+    require_rights_confirmation: bool = False
     host: str = "127.0.0.1"
     port: int = 8020
     reload: bool = False
@@ -66,6 +71,10 @@ class Settings:
             max_image_pixels=_env_int("APHRODITE_MAX_IMAGE_PIXELS", cls.max_image_pixels),
             api_token=os.getenv("APHRODITE_API_TOKEN") or None,
             worker_token=os.getenv("APHRODITE_WORKER_TOKEN") or None,
+            require_rights_confirmation=_env_bool(
+                "APHRODITE_REQUIRE_RIGHTS_CONFIRMATION",
+                cls.require_rights_confirmation,
+            ),
             host=os.getenv("APHRODITE_HOST", cls.host),
             port=_env_int("APHRODITE_PORT", cls.port),
             reload=_env_bool("APHRODITE_RELOAD", cls.reload),

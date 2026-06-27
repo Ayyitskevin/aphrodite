@@ -7,14 +7,21 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 from urllib import error, request
 
 from PIL import Image, UnidentifiedImageError
+
+try:  # POSIX advisory file locking; absent on non-Unix platforms.
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None  # type: ignore[assignment]
 
 from aphrodite.domain import JobRecord, OutputVariant
 from aphrodite.renderers import RenderedOutput, RendererError
@@ -165,47 +172,62 @@ class XAIImageRendererBackend:
         return cls(media_root=media_root, config=XAIImageConfig.from_env(media_root=media_root))
 
     def render(self, *, job: JobRecord, variant: OutputVariant) -> RenderedOutput:
-        self.cost_guard.assert_can_start(job=job, variant=variant)
+        # Resolve the source before reserving budget so a missing source asset
+        # fails without leaving a dangling reservation.
         source_image = self._source_image_payload(job)
-        started = time.monotonic()
-        response = self.client.render_image(
-            prompt=_prompt_for(job=job, variant=variant, has_source=source_image is not None),
-            aspect_ratio=_aspect_ratio_for(variant),
-            source_image=source_image,
-        )
-        latency_ms = max(0, int((time.monotonic() - started) * 1000))
-        self.cost_guard.record_spend(job=job, variant=variant, cost_ticks=response.cost_ticks)
+        self.cost_guard.assert_can_start(job=job, variant=variant)
 
-        content_type, extension, width, height = _decode_output_image(
-            response.image,
-            response.mime_type,
-        )
-        storage_path = output_relative_path(
-            job_id=job.id,
-            variant_id=variant.id,
-            extension=extension,
-        )
-        stored = write_output_file(
-            media_root=self.media_root,
-            relative_path=storage_path,
-            content=response.image,
-        )
-        return RenderedOutput(
-            variant_id=variant.id,
-            storage_path=stored.relative_path,
-            content_type=content_type,
-            bytes=stored.bytes,
-            sha256=stored.sha256,
-            width=width,
-            height=height,
-            # Forward the ACTUAL spend reported by xAI (ticks -> USD) plus the
-            # model and call latency so the API and Mise see real cost, not just
-            # the local cost ledger written by the cost guard.
-            cost_usd=response.cost_ticks / TICKS_PER_USD,
-            cost_ticks=response.cost_ticks,
-            model=self.config.model,
-            latency_ms=latency_ms,
-        )
+        billed_ticks = 0
+        settled = False
+        try:
+            started = time.monotonic()
+            response = self.client.render_image(
+                prompt=_prompt_for(job=job, variant=variant, has_source=source_image is not None),
+                aspect_ratio=_aspect_ratio_for(variant),
+                source_image=source_image,
+            )
+            billed_ticks = response.cost_ticks
+            latency_ms = max(0, int((time.monotonic() - started) * 1000))
+
+            content_type, extension, width, height = _decode_output_image(
+                response.image,
+                response.mime_type,
+            )
+            storage_path = output_relative_path(
+                job_id=job.id,
+                variant_id=variant.id,
+                extension=extension,
+            )
+            stored = write_output_file(
+                media_root=self.media_root,
+                relative_path=storage_path,
+                content=response.image,
+            )
+            self.cost_guard.record_spend(job=job, variant=variant, cost_ticks=billed_ticks)
+            settled = True
+            return RenderedOutput(
+                variant_id=variant.id,
+                storage_path=stored.relative_path,
+                content_type=content_type,
+                bytes=stored.bytes,
+                sha256=stored.sha256,
+                width=width,
+                height=height,
+                # Forward the ACTUAL spend reported by xAI (ticks -> USD) plus the
+                # model and call latency so the API and Mise see real cost, not
+                # just the local cost ledger written by the cost guard.
+                cost_usd=billed_ticks / TICKS_PER_USD,
+                cost_ticks=billed_ticks,
+                model=self.config.model,
+                latency_ms=latency_ms,
+            )
+        finally:
+            if not settled:
+                # Render failed after the budget reservation. Reconcile to the
+                # amount xAI actually billed (0 if the call never billed) so a
+                # paid-but-failed render stays visible and a no-charge failure
+                # releases its reservation.
+                self.cost_guard.record_spend(job=job, variant=variant, cost_ticks=billed_ticks)
 
     def _source_image_payload(self, job: JobRecord) -> dict[str, str] | None:
         if job.source_asset is not None:
@@ -225,33 +247,50 @@ class XAIImageRendererBackend:
 
 
 class XAIImageCostGuard:
+    """Worker-local, secondary spend rail subordinate to Mise's hard cap.
+
+    Mise owns the authoritative per-render spend cap (it sums the cost_usd the
+    worker reports and refuses anything that would exceed it). This guard is a
+    best-effort local backstop: it reserves the estimated cost under a file lock
+    before the paid call so concurrent renders sharing one ledger cannot both
+    pass the daily-budget check and overspend (closing a check-then-act race),
+    then reconciles the reservation to the real billed amount.
+    """
+
     def __init__(self, config: XAIImageConfig) -> None:
         self.config = config
 
     def assert_can_start(self, *, job: JobRecord, variant: OutputVariant) -> None:
         if self.config.estimated_image_cost_ticks > self.config.max_image_cost_ticks:
             raise RendererError("xAI estimated image cost exceeds per-image limit")
+        if not self.config.cost_ledger_path:
+            # No local ledger: cannot enforce a local cap, defer to Mise's cap.
+            return
 
-        today_spend = self._spent_today_ticks()
-        if today_spend + self.config.estimated_image_cost_ticks > self.config.daily_budget_ticks:
-            raise RendererError("xAI daily budget would be exceeded by this render")
+        with self._locked_ledger() as handle:
+            today_spend = self._spent_today_ticks(handle)
+            estimate = self.config.estimated_image_cost_ticks
+            if today_spend + estimate > self.config.daily_budget_ticks:
+                raise RendererError("xAI daily budget would be exceeded by this render")
+            # Reserve the estimate atomically so a concurrent render sees this
+            # spend before the actual cost is known. record_spend reconciles it.
+            self._append_entry(
+                handle, job=job, variant=variant, cost_ticks=estimate, kind="reservation"
+            )
 
     def record_spend(self, *, job: JobRecord, variant: OutputVariant, cost_ticks: int) -> None:
         if not self.config.cost_ledger_path:
             return
-        path = Path(self.config.cost_ledger_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        entry = {
-            "date": date.today().isoformat(),
-            "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "job_id": job.id,
-            "variant_id": variant.id,
-            "model": self.config.model,
-            "cost_in_usd_ticks": cost_ticks,
-            "cost_usd": cost_ticks / TICKS_PER_USD,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        # Reconcile the earlier estimate reservation to the real billed cost; the
+        # delta keeps the daily ledger total equal to actual spend. Called even
+        # on failure (with whatever was billed, 0 if the call never billed) so a
+        # paid-but-failed render stays visible and a no-charge failure releases
+        # its reservation.
+        delta = cost_ticks - self.config.estimated_image_cost_ticks
+        with self._locked_ledger() as handle:
+            self._append_entry(
+                handle, job=job, variant=variant, cost_ticks=delta, kind="settlement"
+            )
 
         if cost_ticks > self.config.max_image_cost_ticks:
             LOG.warning(
@@ -264,23 +303,54 @@ class XAIImageCostGuard:
                 },
             )
 
-    def _spent_today_ticks(self) -> int:
-        if not self.config.cost_ledger_path:
-            return 0
-        path = Path(self.config.cost_ledger_path)
-        if not path.exists():
-            return 0
+    @contextmanager
+    def _locked_ledger(self) -> Iterator[IO[str]]:
+        path = Path(self.config.cost_ledger_path or "")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+", encoding="utf-8")
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield handle
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
+    def _append_entry(
+        self,
+        handle: IO[str],
+        *,
+        job: JobRecord,
+        variant: OutputVariant,
+        cost_ticks: int,
+        kind: str,
+    ) -> None:
+        handle.seek(0, 2)
+        entry = {
+            "date": date.today().isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "job_id": job.id,
+            "variant_id": variant.id,
+            "model": self.config.model,
+            "kind": kind,
+            "cost_in_usd_ticks": cost_ticks,
+            "cost_usd": cost_ticks / TICKS_PER_USD,
+        }
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        handle.flush()
+
+    def _spent_today_ticks(self, handle: IO[str]) -> int:
+        handle.seek(0)
         today = date.today().isoformat()
         total = 0
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("date") == today:
-                    total += int(entry.get("cost_in_usd_ticks") or 0)
+        for line in handle:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("date") == today:
+                total += int(entry.get("cost_in_usd_ticks") or 0)
         return total
 
 

@@ -138,10 +138,14 @@ CREATE TABLE IF NOT EXISTS job_outputs (
   cost_ticks INTEGER,
   model TEXT,
   latency_ms INTEGER,
+  render_request_id TEXT,
   error TEXT,
   review_status TEXT NOT NULL DEFAULT 'pending_review',
   review_note TEXT,
   reviewed_at TEXT,
+  rights_confirmed_at TEXT,
+  rights_confirmed_by TEXT,
+  license_note TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(job_id, variant_id),
@@ -816,89 +820,110 @@ class JobStore:
                 raise OutputVariantNotFoundError(job_id, output.variant_id)
 
             existing = conn.execute(
-                "SELECT id, created_at FROM job_outputs WHERE job_id = ? AND variant_id = ?",
+                "SELECT id, created_at, render_request_id "
+                "FROM job_outputs WHERE job_id = ? AND variant_id = ?",
                 (job_id, output.variant_id),
             ).fetchone()
-            output_id = existing["id"] if existing is not None else str(uuid.uuid4())
-            created_at = existing["created_at"] if existing is not None else now
-            conn.execute(
-                """
-                INSERT INTO job_outputs (
-                  id, job_id, variant_id, status, storage_path, content_type,
-                  bytes, sha256, width, height, cost_usd, cost_ticks, model,
-                  latency_ms, error, review_status,
-                  review_note, reviewed_at, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(job_id, variant_id) DO UPDATE SET
-                  status = excluded.status,
-                  storage_path = excluded.storage_path,
-                  content_type = excluded.content_type,
-                  bytes = excluded.bytes,
-                  sha256 = excluded.sha256,
-                  width = excluded.width,
-                  height = excluded.height,
-                  cost_usd = excluded.cost_usd,
-                  cost_ticks = excluded.cost_ticks,
-                  model = excluded.model,
-                  latency_ms = excluded.latency_ms,
-                  error = excluded.error,
-                  review_status = excluded.review_status,
-                  review_note = excluded.review_note,
-                  reviewed_at = excluded.reviewed_at,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    output_id,
-                    job_id,
-                    output.variant_id,
-                    OutputStatus.COMPLETED.value,
-                    output.storage_path,
-                    output.content_type,
-                    output.bytes,
-                    output.sha256,
-                    output.width,
-                    output.height,
-                    output.cost_usd,
-                    output.cost_ticks,
-                    output.model,
-                    output.latency_ms,
-                    None,
-                    OutputReviewStatus.PENDING_REVIEW.value,
-                    None,
-                    None,
-                    created_at,
-                    now,
-                ),
+            is_duplicate_delivery = (
+                existing is not None
+                and output.render_request_id is not None
+                and existing["render_request_id"] == output.render_request_id
             )
-
-            completed_variant_ids = {
-                row["variant_id"]
-                for row in conn.execute(
-                    """
-                    SELECT variant_id
-                      FROM job_outputs
-                     WHERE job_id = ? AND status = ?
-                    """,
-                    (job_id, OutputStatus.COMPLETED.value),
-                ).fetchall()
-            }
-            if planned_variant_ids.issubset(completed_variant_ids):
+            if not is_duplicate_delivery:
+                # A new render attempt (or a legacy worker that sends no
+                # render_request_id) replaces the output and resets review. An
+                # exact re-delivery of the same attempt falls through untouched
+                # so a duplicated completion never revokes an operator's approval
+                # or double-counts spend.
+                output_id = existing["id"] if existing is not None else str(uuid.uuid4())
+                created_at = existing["created_at"] if existing is not None else now
                 conn.execute(
                     """
-                    UPDATE jobs
-                       SET status = ?,
-                           claimed_by = NULL,
-                           claim_token = NULL,
-                           claimed_at = NULL,
-                           claim_expires_at = NULL,
-                           error = NULL,
-                           failure_category = NULL,
-                           updated_at = ?
-                     WHERE id = ?
+                    INSERT INTO job_outputs (
+                      id, job_id, variant_id, status, storage_path, content_type,
+                      bytes, sha256, width, height, cost_usd, cost_ticks, model,
+                      latency_ms, render_request_id, error, review_status,
+                      review_note, reviewed_at, rights_confirmed_at,
+                      rights_confirmed_by, license_note, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(job_id, variant_id) DO UPDATE SET
+                      status = excluded.status,
+                      storage_path = excluded.storage_path,
+                      content_type = excluded.content_type,
+                      bytes = excluded.bytes,
+                      sha256 = excluded.sha256,
+                      width = excluded.width,
+                      height = excluded.height,
+                      cost_usd = excluded.cost_usd,
+                      cost_ticks = excluded.cost_ticks,
+                      model = excluded.model,
+                      latency_ms = excluded.latency_ms,
+                      render_request_id = excluded.render_request_id,
+                      error = excluded.error,
+                      review_status = excluded.review_status,
+                      review_note = excluded.review_note,
+                      reviewed_at = excluded.reviewed_at,
+                      rights_confirmed_at = excluded.rights_confirmed_at,
+                      rights_confirmed_by = excluded.rights_confirmed_by,
+                      license_note = excluded.license_note,
+                      updated_at = excluded.updated_at
                     """,
-                    (JobStatus.COMPLETED.value, now, job_id),
+                    (
+                        output_id,
+                        job_id,
+                        output.variant_id,
+                        OutputStatus.COMPLETED.value,
+                        output.storage_path,
+                        output.content_type,
+                        output.bytes,
+                        output.sha256,
+                        output.width,
+                        output.height,
+                        output.cost_usd,
+                        output.cost_ticks,
+                        output.model,
+                        output.latency_ms,
+                        output.render_request_id,
+                        None,
+                        OutputReviewStatus.PENDING_REVIEW.value,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        created_at,
+                        now,
+                    ),
                 )
+
+                completed_variant_ids = {
+                    row["variant_id"]
+                    for row in conn.execute(
+                        """
+                        SELECT variant_id
+                          FROM job_outputs
+                         WHERE job_id = ? AND status = ?
+                        """,
+                        (job_id, OutputStatus.COMPLETED.value),
+                    ).fetchall()
+                }
+                if planned_variant_ids.issubset(completed_variant_ids):
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                           SET status = ?,
+                               claimed_by = NULL,
+                               claim_token = NULL,
+                               claimed_at = NULL,
+                               claim_expires_at = NULL,
+                               error = NULL,
+                               failure_category = NULL,
+                               updated_at = ?
+                         WHERE id = ?
+                        """,
+                        (JobStatus.COMPLETED.value, now, job_id),
+                    )
 
         output_record = self._get_output(job_id=job_id, variant_id=output.variant_id)
         if output_record is None:
@@ -931,6 +956,44 @@ class JobStore:
                     review_status.value,
                     clean_note,
                     now,
+                    now,
+                    job_id,
+                    variant_id,
+                    OutputStatus.COMPLETED.value,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self._get_output(job_id=job_id, variant_id=variant_id)
+
+    def confirm_output_rights(
+        self,
+        *,
+        job_id: str,
+        variant_id: str,
+        confirmed_by: str,
+        license_note: str | None = None,
+    ) -> JobOutputRecord | None:
+        now = _utc_now()
+        clean_note = (
+            license_note.strip() if license_note is not None and license_note.strip() else None
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_outputs
+                   SET rights_confirmed_at = ?,
+                       rights_confirmed_by = ?,
+                       license_note = ?,
+                       updated_at = ?
+                 WHERE job_id = ?
+                   AND variant_id = ?
+                   AND status = ?
+                """,
+                (
+                    now,
+                    confirmed_by,
+                    clean_note,
                     now,
                     job_id,
                     variant_id,
@@ -1386,6 +1449,10 @@ class JobStore:
             "cost_ticks": "INTEGER",
             "model": "TEXT",
             "latency_ms": "INTEGER",
+            "render_request_id": "TEXT",
+            "rights_confirmed_at": "TEXT",
+            "rights_confirmed_by": "TEXT",
+            "license_note": "TEXT",
         }.items():
             if column not in output_columns:
                 conn.execute(f"ALTER TABLE job_outputs ADD COLUMN {column} {definition}")
@@ -1501,10 +1568,14 @@ class JobStore:
             cost_ticks=row["cost_ticks"],
             model=row["model"],
             latency_ms=row["latency_ms"],
+            render_request_id=row["render_request_id"],
             error=row["error"],
             review_status=OutputReviewStatus(row["review_status"]),
             review_note=row["review_note"],
             reviewed_at=row["reviewed_at"],
+            rights_confirmed_at=row["rights_confirmed_at"],
+            rights_confirmed_by=row["rights_confirmed_by"],
+            license_note=row["license_note"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -198,6 +198,7 @@ curl -s http://127.0.0.1:8020/v1/worker/jobs/<job id>/outputs \
 | `APHRODITE_MAX_UPLOAD_BYTES` | `15000000` | Maximum upload size for one source image. |
 | `APHRODITE_API_TOKEN` | unset | Optional bearer token required for mutating API routes when set. |
 | `APHRODITE_WORKER_TOKEN` | unset | Optional bearer token required for worker routes; falls back to `APHRODITE_API_TOKEN` when unset. |
+| `APHRODITE_REQUIRE_RIGHTS_CONFIRMATION` | `false` | When `true`, export requires an explicit per-output rights/consent confirmation in addition to quality approval. Owner activation gate; off preserves current behavior. |
 | `APHRODITE_HOST` | `127.0.0.1` | Host used by the `aphrodite-api` script. |
 | `APHRODITE_PORT` | `8020` | Port used by the `aphrodite-api` script. |
 | `APHRODITE_RELOAD` | `false` | Enables uvicorn reload for local development. |
