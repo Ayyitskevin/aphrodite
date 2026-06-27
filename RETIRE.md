@@ -17,8 +17,10 @@ concrete teardown path.
 The render path is stateless and reproducible:
 
 - A render is a pure function of `(source asset, output spec, render request)`.
-- Each completion is stamped with a `render_request_id`; a duplicated delivery
-  is an idempotent no-op, so retries never double-charge or revoke approval.
+- Idempotent at two levels: a caller-supplied `idempotency_key` on job creation
+  collapses a re-submitted request to the same job, and each render is keyed
+  deterministically by `(source asset, spec, request)`. So retries, re-claims,
+  and duplicated deliveries never duplicate a render or double-charge.
 - The worker reports `cost_usd`, `cost_ticks`, `model`, and `latency_ms` on
   every output; Mise sums real cost against its hard cap.
 - The worker never publishes. Output enters an explicit-commit review state;
