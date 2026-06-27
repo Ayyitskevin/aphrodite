@@ -68,6 +68,52 @@ Aphrodite ships the *mechanism* but stays dormant until the owner decides:
 3. **Render backend** — `local_stub` (free, deterministic) by default; enable
    `xai` (real spend, needs an API key) only deliberately.
 
+### Owner activation checklist (fill in BEFORE arming)
+
+These are owner decisions, not code. The worker stays safe (free stub, no
+auto-publish, export gated) until all three are set.
+
+- [ ] **Budget number** — the products spend cap Mise enforces (e.g.
+      `MISE_PRODUCTS_BUDGET_USD`). Aphrodite reports real `cost_usd`; the owner
+      sets the number in Mise. Leave `APHRODITE_XAI_DAILY_BUDGET_USD` as a
+      conservative local backstop (or high, to defer entirely to Mise).
+- [ ] **Written consent / licensing policy** — the policy text exists, and
+      `APHRODITE_REQUIRE_RIGHTS_CONFIRMATION=true` so export requires a recorded
+      rights confirmation per output.
+- [ ] **Render backend chosen** — `APHRODITE_WORKER_BACKEND` is `local_stub`
+      (free) or `xai` (real spend), and the matching API key is provisioned for
+      `xai`.
+
+## What's safe to turn off
+
+Each surface can be disabled independently; the worker stays correct and
+spend-safe with all of them off (that is its dormant default).
+
+| Turn off | How | Effect |
+| --- | --- | --- |
+| Paid generation | `APHRODITE_WORKER_BACKEND=local_stub` (or stop the worker) | No real spend; deterministic placeholder outputs. |
+| Local budget cap | raise `APHRODITE_XAI_DAILY_BUDGET_USD` | Defers the cap entirely to Mise's authoritative cap. |
+| Consent gate | `APHRODITE_REQUIRE_RIGHTS_CONFIRMATION` unset/false | Export requires quality approval only (no auto-publish either way). |
+| Alert webhook | unset `APHRODITE_ALERT_WEBHOOK_URL` | No outbound webhook (it only ever carried metadata). |
+| API auth | unset `APHRODITE_API_TOKEN` / `APHRODITE_WORKER_TOKEN` | Open routes (local/dev only). |
+
+Turning everything off never publishes media and never charges: outputs stay
+in `pending_review` and export remains operator-pull behind the approval gate.
+
+## Rollback
+
+- **Code rollback is safe.** Every schema change is an additive, idempotent
+  migration (new nullable columns / indexes); older code simply ignores the new
+  columns, and re-running a newer build re-applies migrations idempotently. No
+  destructive migration exists to reverse.
+- **Re-arm after a stand-down.** Flip the backend back to `xai`, restore the
+  consent flag, and resume `aphrodite-worker`. Idempotency keys mean a replayed
+  job or render does not duplicate or double-charge.
+- **Data restore.** Restore `data/aphrodite.db` and the `media/` root together
+  from backup; render outputs are regenerable from source assets if lost.
+- **Hard stop.** Stopping the worker halts all new spend immediately; the API
+  can keep serving read-only renders/spend views for export to Mise.
+
 ## Decommission checklist
 
 1. **Stop intake.** Stop creating jobs; let in-flight claims drain or expire
@@ -77,8 +123,8 @@ Aphrodite ships the *mechanism* but stays dormant until the owner decides:
 3. **Export authoritative state to Mise:**
    - Clients/projects: `GET /v1/clients`, `GET /v1/projects`.
    - Per-job renders + real cost + review + consent state:
-     `GET /v1/jobs/{job_id}/renders` (the Mise-facing envelope) and
-     `GET /v1/jobs/{job_id}`.
+     `GET /v1/jobs/{job_id}/renders` (the Mise-facing envelope, validated by
+     `schemas/products_render.schema.json`) and `GET /v1/jobs/{job_id}`.
    - Spend: `GET /admin/spend.json` and per-batch reports.
    - Approved/consented media: the export ZIP routes.
 4. **Reconcile spend** in Mise's ledger from the exported cost data; the local
