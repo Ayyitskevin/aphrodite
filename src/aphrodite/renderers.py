@@ -33,7 +33,12 @@ class RenderedOutput:
     model: str = "unknown"
     latency_ms: int | None = None
 
-    def as_worker_payload(self, *, claim_token: str) -> dict[str, str | int | float | None]:
+    def as_worker_payload(
+        self,
+        *,
+        claim_token: str,
+        render_request_id: str | None = None,
+    ) -> dict[str, str | int | float | None]:
         return {
             "claim_token": claim_token,
             "variant_id": self.variant_id,
@@ -47,6 +52,7 @@ class RenderedOutput:
             "cost_ticks": self.cost_ticks,
             "model": self.model,
             "latency_ms": self.latency_ms,
+            "render_request_id": render_request_id,
         }
 
 

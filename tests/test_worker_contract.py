@@ -212,6 +212,87 @@ def test_fail_claimed_job_marks_job_failed(tmp_path: Path) -> None:
     assert failed.claimed_by is None
 
 
+def test_duplicate_delivery_with_same_request_id_is_idempotent(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    store.create_job(job_request(quantity=2))
+    claim = store.claim_next_job(worker_id="renderer")
+    assert claim is not None
+
+    def payload() -> JobOutputCreate:
+        return JobOutputCreate(
+            claim_token=claim.claim_token,
+            variant_id="catalog_square-1",
+            storage_path="outputs/catalog_square-1.jpg",
+            content_type="image/jpeg",
+            bytes=1024,
+            sha256="a" * 64,
+            width=2000,
+            height=2000,
+            cost_usd=0.02,
+            render_request_id="req-123",
+        )
+
+    first = store.complete_job_output(job_id=claim.job.id, output=payload())
+    assert first is not None
+    approved = store.review_output(
+        job_id=claim.job.id,
+        variant_id="catalog_square-1",
+        review_status=OutputReviewStatus.APPROVED,
+    )
+    assert approved is not None and approved.review_status == OutputReviewStatus.APPROVED
+
+    # A re-delivery of the exact same render attempt must be a no-op: it must
+    # not revoke the operator's approval or change the recorded cost.
+    second = store.complete_job_output(job_id=claim.job.id, output=payload())
+    assert second is not None
+    assert second.review_status == OutputReviewStatus.APPROVED
+    assert second.cost_usd == 0.02
+    assert second.render_request_id == "req-123"
+
+    job = store.get_job(claim.job.id)
+    assert job is not None
+    assert [output.variant_id for output in job.outputs] == ["catalog_square-1"]
+
+
+def test_different_request_id_replaces_output_and_resets_review(tmp_path: Path) -> None:
+    store = JobStore(str(tmp_path / "aphrodite.db"))
+    store.initialize()
+    store.create_job(job_request(quantity=2))
+    claim = store.claim_next_job(worker_id="renderer")
+    assert claim is not None
+
+    def payload(request_id: str, sha: str) -> JobOutputCreate:
+        return JobOutputCreate(
+            claim_token=claim.claim_token,
+            variant_id="catalog_square-1",
+            storage_path="outputs/catalog_square-1.jpg",
+            content_type="image/jpeg",
+            bytes=1024,
+            sha256=sha,
+            width=2000,
+            height=2000,
+            render_request_id=request_id,
+        )
+
+    store.complete_job_output(job_id=claim.job.id, output=payload("req-1", "a" * 64))
+    store.review_output(
+        job_id=claim.job.id,
+        variant_id="catalog_square-1",
+        review_status=OutputReviewStatus.APPROVED,
+    )
+
+    # A genuinely new render attempt is a replacement: review resets so an
+    # unapproved regenerated artifact cannot inherit the old approval.
+    replaced = store.complete_job_output(
+        job_id=claim.job.id,
+        output=payload("req-2", "b" * 64),
+    )
+    assert replaced is not None
+    assert replaced.review_status == OutputReviewStatus.PENDING_REVIEW
+    assert replaced.render_request_id == "req-2"
+
+
 def test_complete_output_persists_cost_and_provenance(tmp_path: Path) -> None:
     store = JobStore(str(tmp_path / "aphrodite.db"))
     store.initialize()

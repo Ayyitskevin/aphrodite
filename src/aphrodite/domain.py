@@ -216,6 +216,7 @@ class JobOutputRecord(BaseModel):
     cost_ticks: int | None = Field(default=None, ge=0)
     model: str | None = Field(default=None, max_length=200)
     latency_ms: int | None = Field(default=None, ge=0)
+    render_request_id: str | None = Field(default=None, max_length=120)
     error: str | None = None
     review_status: OutputReviewStatus = OutputReviewStatus.PENDING_REVIEW
     review_note: str | None = None
@@ -401,6 +402,9 @@ class JobOutputCreate(BaseModel):
     cost_ticks: int | None = Field(default=None, ge=0)
     model: str | None = Field(default=None, max_length=200)
     latency_ms: int | None = Field(default=None, ge=0)
+    # Stable per render attempt. A duplicated delivery of the same attempt is an
+    # idempotent no-op so retries never double-charge or revoke approval.
+    render_request_id: str | None = Field(default=None, max_length=120)
 
 
 class JobFailureRequest(BaseModel):
