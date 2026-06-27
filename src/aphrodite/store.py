@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS job_outputs (
   review_status TEXT NOT NULL DEFAULT 'pending_review',
   review_note TEXT,
   reviewed_at TEXT,
+  rights_confirmed_at TEXT,
+  rights_confirmed_by TEXT,
+  license_note TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(job_id, variant_id),
@@ -840,9 +843,10 @@ class JobStore:
                       id, job_id, variant_id, status, storage_path, content_type,
                       bytes, sha256, width, height, cost_usd, cost_ticks, model,
                       latency_ms, render_request_id, error, review_status,
-                      review_note, reviewed_at, created_at, updated_at
+                      review_note, reviewed_at, rights_confirmed_at,
+                      rights_confirmed_by, license_note, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id, variant_id) DO UPDATE SET
                       status = excluded.status,
                       storage_path = excluded.storage_path,
@@ -860,6 +864,9 @@ class JobStore:
                       review_status = excluded.review_status,
                       review_note = excluded.review_note,
                       reviewed_at = excluded.reviewed_at,
+                      rights_confirmed_at = excluded.rights_confirmed_at,
+                      rights_confirmed_by = excluded.rights_confirmed_by,
+                      license_note = excluded.license_note,
                       updated_at = excluded.updated_at
                     """,
                     (
@@ -880,6 +887,9 @@ class JobStore:
                         output.render_request_id,
                         None,
                         OutputReviewStatus.PENDING_REVIEW.value,
+                        None,
+                        None,
+                        None,
                         None,
                         None,
                         created_at,
@@ -946,6 +956,44 @@ class JobStore:
                     review_status.value,
                     clean_note,
                     now,
+                    now,
+                    job_id,
+                    variant_id,
+                    OutputStatus.COMPLETED.value,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self._get_output(job_id=job_id, variant_id=variant_id)
+
+    def confirm_output_rights(
+        self,
+        *,
+        job_id: str,
+        variant_id: str,
+        confirmed_by: str,
+        license_note: str | None = None,
+    ) -> JobOutputRecord | None:
+        now = _utc_now()
+        clean_note = (
+            license_note.strip() if license_note is not None and license_note.strip() else None
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_outputs
+                   SET rights_confirmed_at = ?,
+                       rights_confirmed_by = ?,
+                       license_note = ?,
+                       updated_at = ?
+                 WHERE job_id = ?
+                   AND variant_id = ?
+                   AND status = ?
+                """,
+                (
+                    now,
+                    confirmed_by,
+                    clean_note,
                     now,
                     job_id,
                     variant_id,
@@ -1402,6 +1450,9 @@ class JobStore:
             "model": "TEXT",
             "latency_ms": "INTEGER",
             "render_request_id": "TEXT",
+            "rights_confirmed_at": "TEXT",
+            "rights_confirmed_by": "TEXT",
+            "license_note": "TEXT",
         }.items():
             if column not in output_columns:
                 conn.execute(f"ALTER TABLE job_outputs ADD COLUMN {column} {definition}")
@@ -1522,6 +1573,9 @@ class JobStore:
             review_status=OutputReviewStatus(row["review_status"]),
             review_note=row["review_note"],
             reviewed_at=row["reviewed_at"],
+            rights_confirmed_at=row["rights_confirmed_at"],
+            rights_confirmed_by=row["rights_confirmed_by"],
+            license_note=row["license_note"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

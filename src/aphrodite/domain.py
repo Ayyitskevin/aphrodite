@@ -221,6 +221,12 @@ class JobOutputRecord(BaseModel):
     review_status: OutputReviewStatus = OutputReviewStatus.PENDING_REVIEW
     review_note: str | None = None
     reviewed_at: str | None = None
+    # Explicit rights/consent confirmation, distinct from quality approval. When
+    # the consent policy is active, export requires this in addition to approval.
+    # Reset whenever the output is regenerated so new media needs fresh consent.
+    rights_confirmed_at: str | None = None
+    rights_confirmed_by: str | None = None
+    license_note: str | None = None
     created_at: str
     updated_at: str
 
@@ -346,6 +352,7 @@ class RenderResult(BaseModel):
     model: str | None = None
     latency_ms: int | None = None
     review_status: OutputReviewStatus | None = None
+    rights_confirmed: bool = False
 
 
 class RenderResultEnvelope(BaseModel):
@@ -405,6 +412,13 @@ class JobOutputCreate(BaseModel):
     # Stable per render attempt. A duplicated delivery of the same attempt is an
     # idempotent no-op so retries never double-charge or revoke approval.
     render_request_id: str | None = Field(default=None, max_length=120)
+
+
+class OutputRightsConfirmation(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    confirmed_by: str = Field(min_length=1, max_length=200)
+    license_note: str | None = Field(default=None, max_length=2000)
 
 
 class JobFailureRequest(BaseModel):
@@ -488,6 +502,7 @@ def build_render_results(job: JobRecord) -> RenderResultEnvelope:
                 model=output.model,
                 latency_ms=output.latency_ms,
                 review_status=output.review_status,
+                rights_confirmed=output.rights_confirmed_at is not None,
             )
         )
     return RenderResultEnvelope(renders=renders)
